@@ -35,6 +35,8 @@ else
     echo "✅ Ready to create VM..."
 fi
 
+set -e
+
 gcloud alpha compute tpus tpu-vm create $TPU_NAME \
 --zone=$ZONE \
 --accelerator-type=v5litepod-8 \
@@ -53,6 +55,8 @@ sed -i '' -E "/^Host $TPU_NAME$/,+1 s/(HostName ).*/\1$EXT_IP/" ~/.ssh/config
 
 # Remove previous known host using the same IP
 sed -i '' "/$EXT_IP/d" ~/.ssh/known_hosts
+# This is not great, because it bypasses ssh security check, but that's ok
+ssh-keyscan -H $EXT_IP >> ~/.ssh/known_hosts
 
 echo "🏃 Running install script"
 ssh $TPU_NAME -C "bash setup.sh"
