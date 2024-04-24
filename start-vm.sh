@@ -1,32 +1,33 @@
 #!/bin/bash
-CONF=~/.gcp-setup
+usage() { echo "$0 usage:" && grep " .)\ #" $0; exit 0; }
 
-if test -f "$CONF"; then
-    source $CONF
-fi
+# Parse arguments with getopt
+[ $# -eq 0 ] && usage
+while getopts ":hz:p:t:" arg; do
+  case $arg in
+    z) # Specify zone.
+      zone=${OPTARG}
+      ;;
+    p) # Specify project name.
+      project=${OPTARG}
+      ;;
+    t) # Specify TPU name.
+      tpu_name=${OPTARG}
+      ;;
+    h | *) # Display help.
+      usage
+      exit 0
+      ;;
+  esac
+done
 
-if [ -z "$TPU_NAME" ]
-then
-    echo -n "Name of the VM: "
-    read TPU_NAME
-    echo "TPU_NAME=$TPU_NAME" >> $CONF
-fi
-if [ -z "$ZONE" ]
-then
-    echo -n "Zone: "
-    read ZONE
-    echo "ZONE=$ZONE" >> $CONF
-fi
-if [ -z "$PROJECT" ]
-then
-    echo -n "Project: "
-    read PROJECT
-    echo "PROJECT=$PROJECT" >> $CONF
+if [ -z "${zone}" ] || [ -z "${project}" ] || [ -z "${tpu_name}" ]; then
+    usage
 fi
 
 # First check if VM is already up
 echo "🔭 Checking if VM is already up..."
-gcloud compute tpus tpu-vm list --zone=$ZONE|grep $TPU_NAME
+gcloud compute tpus tpu-vm list --zone=$zone|grep $tpu_name
 if [ $? -eq 0 ]
 then
     echo "❌ VM already up, quitting."
@@ -37,21 +38,21 @@ fi
 
 set -e
 
-gcloud alpha compute tpus tpu-vm create $TPU_NAME \
---zone=$ZONE \
+gcloud alpha compute tpus tpu-vm create $tpu_name \
+--zone=$zone \
 --accelerator-type=v5litepod-8 \
 --version v2-alpha-tpuv5-lite
 
 echo "🧾 Copying setup script"
-gcloud compute tpus tpu-vm scp --zone $ZONE setup.sh $TPU_NAME: \
-    --project $PROJECT
+gcloud compute tpus tpu-vm scp --zone $zone setup.sh $tpu_name: \
+    --project $project
 
 echo "🤖 Retrieving IP and updating local settings"
-EXT_IP=`gcloud compute tpus tpu-vm describe --zone=$ZONE $TPU_NAME |grep externalIp|cut -d ":" -f 2|cut -d ' ' -f 2`
+EXT_IP=`gcloud compute tpus tpu-vm describe --zone=$zone $tpu_name |grep externalIp|cut -d ":" -f 2|cut -d ' ' -f 2`
 
 
 # update .ssh/config
-sed -i '' -E "/^Host $TPU_NAME$/,+1 s/(HostName ).*/\1$EXT_IP/" ~/.ssh/config
+sed -i '' -E "/^Host $tpu_name$/,+1 s/(HostName ).*/\1$EXT_IP/" ~/.ssh/config
 
 # Remove previous known host using the same IP
 sed -i '' "/$EXT_IP/d" ~/.ssh/known_hosts
@@ -59,8 +60,8 @@ sed -i '' "/$EXT_IP/d" ~/.ssh/known_hosts
 ssh-keyscan -H $EXT_IP >> ~/.ssh/known_hosts
 
 echo "🏃 Running install script"
-ssh $TPU_NAME -C "bash setup.sh"
+ssh $tpu_name -C "bash setup.sh"
 
 echo
-echo "✨ All ready. You can ssh $TPU_NAME now."
+echo "✨ All ready. You can ssh $tpu_name now."
 echo
