@@ -3,7 +3,7 @@ usage() { echo "$0 usage:" && grep " .)\ #" $0; exit 0; }
 
 # Parse arguments with getopt
 [ $# -eq 0 ] && usage
-while getopts ":hz:p:t:" arg; do
+while getopts ":hz:p:t:v:a:" arg; do
   case $arg in
     z) # Specify zone.
       zone=${OPTARG}
@@ -14,6 +14,12 @@ while getopts ":hz:p:t:" arg; do
     t) # Specify TPU name.
       tpu_name=${OPTARG}
       ;;
+    v) # Specify version. (default: v2-alpha-tpuv5-lite)
+      version=${OPTARG}
+      ;;
+    a) # Specify accelerator type. (default: v5litepod-8)
+      accelerator=${OPTARG}
+      ;;
     h | *) # Display help.
       usage
       exit 0
@@ -23,6 +29,12 @@ done
 
 if [ -z "${zone}" ] || [ -z "${project}" ] || [ -z "${tpu_name}" ]; then
     usage
+fi
+if [ -z "${version}" ]; then
+    version="v2-alpha-tpuv5-lite"
+fi
+if [ -z "${accelerator}" ]; then
+    accelerator="v5litepod-8"
 fi
 
 # First check if VM is already up
@@ -40,7 +52,7 @@ set -e
 
 gcloud alpha compute tpus tpu-vm create $tpu_name \
 --zone=$zone \
---accelerator-type=v5litepod-8 \
+--accelerator-type=$accelerator \
 --version v2-alpha-tpuv5-lite
 
 echo "🧾 Copying setup script"
