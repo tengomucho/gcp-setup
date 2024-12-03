@@ -275,5 +275,27 @@ def cache(check_state: bool = False):
     Console().print(table)
 
 
+@app.command()
+def delete(name: str):
+    print(f"[bold green]Deleting TPU {name}[bold green]")
+    cache = get_cache()
+    if name not in cache:
+        print(f"❌ TPU {name} not found in cache, delete it manually.")
+        return
+    instance = cache[name]
+    zone = instance["zone"]
+    print(f"Deleting TPU [bold blue]{name}[/bold blue] in [bold]{zone}[/bold]...")
+    try:
+        _run(f"gcloud compute tpus tpu-vm delete {name} --zone {zone}")
+    except subprocess.CalledProcessError:
+        print(f"❌ TPU {name} could not be deleted.")
+        return
+    del cache[name]
+    with open(os.path.join(CUR_DIR, CACHE_FILE), "w") as f:
+        json.dump(cache, f, indent=2)
+    print(f"✅ TPU [bold blue]{name}[/bold blue] deleted")
+    print(f"[bold orange]Note:[/bold orange] check if disks need to be deleted too.")
+
+
 if __name__ == "__main__":
     app()
