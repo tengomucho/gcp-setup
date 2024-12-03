@@ -6,6 +6,8 @@ from collections import OrderedDict
 import subprocess
 import shlex
 from rich import print
+from rich.table import Table
+from rich.console import Console
 
 
 CUR_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -251,6 +253,26 @@ def stop():
             print(
                 f"TPU {name} is not running, (state: [cyan]{state}[/cyan]) skipping.."
             )
+
+
+@app.command()
+def cache(check_state: bool = False):
+    print("[bold green]Listing cached TPUs[bold green]")
+    cache = get_cache()
+    if check_state:
+        table = Table("Name", "Zone", "State")
+    else:
+        table = Table("Name", "Zone")
+    for name in cache:
+        instance = cache[name]
+        zone = instance["zone"]
+        state_str = ""
+        if check_state:
+            state = get_state(name, zone)
+            table.add_row(name, zone, state)
+        else:
+            table.add_row(name, zone)
+    Console().print(table)
 
 
 if __name__ == "__main__":
