@@ -26,7 +26,8 @@ LOCATIONS = [
     "us-west1-b",
     "us-west1-c",
     "us-west4-a",
-    "us-west4-b" "us-central1-a",
+    "us-west4-b",
+    "us-central1-a",
     "us-central1-b",
     "us-central1-c",
     "us-central1-f",
@@ -155,6 +156,7 @@ def restart_tpu(name: str, zone: str):
 def create(
     accelerator_type: str = "v5litepod-8",
     software_version: str = "v2-alpha-tpuv5-lite",
+    location: str = None,
 ):
     print("[bold green]Creating TPU[bold green]")
     cache = get_cache()
@@ -165,7 +167,11 @@ def create(
 
     config = get_config()
     project = get_project()
-    for location in LOCATIONS:
+    if location:
+        locations = [location]
+    else:
+        locations = LOCATIONS
+    for location in locations:
         print(f"\nTrying to create a TPU VM in [bold]{location}[/bold]...")
         name = f"{config.tpu_name_prefix}{location}"
         try:
@@ -207,7 +213,7 @@ def create(
             return
         except subprocess.CalledProcessError:
             print(
-                f"❌ TPU not available in [bold]{location}[/bold], trying next location..."
+                f"❌ TPU not available in [bold]{location}[/bold]"
             )
             continue
 
