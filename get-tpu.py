@@ -278,7 +278,7 @@ def cache(check_state: bool = False):
     print("[bold green]Listing cached TPUs[bold green]")
     cache = get_cache()
     if check_state:
-        table = Table("Name", "Zone", "State")
+        table = Table("Name", "Zone", "State", "IP")
     else:
         table = Table("Name", "Zone")
     for name in cache:
@@ -287,7 +287,11 @@ def cache(check_state: bool = False):
         state_str = ""
         if check_state:
             state = get_state(name, zone)
-            table.add_row(name, zone, state)
+            if state == "READY":
+                ip = get_ext_ip(name, zone)
+            else:
+                ip = ""
+            table.add_row(name, zone, state, ip)
         else:
             table.add_row(name, zone)
     Console().print(table)
