@@ -5,6 +5,7 @@ import os
 from collections import OrderedDict
 import subprocess
 import shlex
+import getpass
 from rich import print
 from rich.table import Table
 from rich.console import Console
@@ -55,6 +56,7 @@ app = typer.Typer()
 class Config:
     tpu_name_prefix: str = "tpu-vm-"
     extra_startup_script: str = None
+    ssh_identity_file: str = None
 
 
 def _run(cmd: str):
@@ -114,11 +116,21 @@ def update_ssh_config(name: str, zone: str):
     ext_ip = get_ext_ip(name, zone)
     print(f"External IP: {ext_ip}, updating ~/.ssh/config")
     with open(os.path.expanduser("~/.ssh/config"), "r") as f:
+        host_found = False
         lines = f.readlines()
         for i, line in enumerate(lines):
             if f"Host {name}" in line:
                 lines[i + 1] = f"  HostName {ext_ip}\n"
+                host_found = True
                 break
+        if not host_found:
+            lines.append(f"Host {name}\n")
+            lines.append(f"  HostName {ext_ip}\n")
+            current_user = getpass.getuser()
+            lines.append(f"  User {current_user}\n")
+            config = get_config()
+            if config.ssh_identity_file:
+                lines.append(f"  IdentityFile {config.ssh_identity_file}\n")
     with open(os.path.expanduser("~/.ssh/config"), "w") as f:
         f.writelines(lines)
     print("Updating ~/.ssh/know_hosts")
