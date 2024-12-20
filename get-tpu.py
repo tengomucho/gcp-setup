@@ -249,12 +249,19 @@ def restart():
 
 
 @app.command()
-def stop():
-    print("[bold green]Stopping TPU[bold green]")
+def stop(name: str = None):
     cache = get_cache()
-    print(
-        f"{len(cache)} elements in cache, trying to stop the first one that appears running."
-    )
+    if name:
+        if name not in cache:
+            print(f"❌ TPU {name} not found in cache, cannot stop it.")
+            return -1
+        print(f"Stopping TPU [bold blue]{name}[/bold blue]...")
+        cache = { name : cache[name] }
+    else:
+        print("[bold green]Stopping TPU[bold green]")
+        print(
+            f"{len(cache)} elements in cache, trying to stop the first one that appears running."
+        )
     for name in cache:
         instance = cache[name]
         zone = instance["zone"]
