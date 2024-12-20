@@ -231,11 +231,18 @@ def create(
 
 
 @app.command()
-def restart():
-    print("[bold green]Getting TPU[bold green]")
-
+def restart(name: str = None):
     cache = get_cache()
-    print(f"{len(cache)} elements in cache, trying to resume one of them...")
+    print("[bold green]Restarting TPU[bold green]")
+    if name:
+        if name not in cache:
+            print(f"❌ TPU {name} not found in cache, cannot stop it.")
+            return -1
+        print(f"Restarting TPU [bold blue]{name}[/bold blue]...")
+        cache = { name : cache[name] }
+    else:
+        print(f"{len(cache)} elements in cache, trying to resume one of them...")
+
     for name in cache:
         instance = cache[name]
         zone = instance["zone"]
