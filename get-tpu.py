@@ -288,24 +288,25 @@ def stop(name: str = None):
 
 
 @app.command()
-def cache(check_state: bool = False):
+def ls(details: bool = False):
     print("[bold green]Listing cached TPUs[bold green]")
     cache = get_cache()
-    if check_state:
-        table = Table("Name", "Zone", "State", "IP")
+    if details:
+        table = Table("Name", "Zone", "Type", "State", "IP")
     else:
         table = Table("Name", "Zone")
     for name in cache:
         instance = cache[name]
         zone = instance["zone"]
         state_str = ""
-        if check_state:
+        if details:
             state = get_state(name, zone)
             if state == "READY":
                 ip = get_ext_ip(name, zone)
             else:
                 ip = ""
-            table.add_row(name, zone, state, ip)
+            tpu_type = instance["type"]
+            table.add_row(name, zone, tpu_type, state, ip)
         else:
             table.add_row(name, zone)
     Console().print(table)
