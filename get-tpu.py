@@ -313,7 +313,7 @@ def ls(details: bool = False):
 
 
 @app.command()
-def delete(name: str):
+def rm(name: str):
     print(f"[bold green]Deleting TPU {name}[bold green]")
     cache = get_cache()
     if name not in cache:
