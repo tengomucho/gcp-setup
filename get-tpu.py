@@ -179,7 +179,7 @@ def create(
         try:
             print("First check if the TPU is already created...")
             command = f"gcloud compute tpus tpu-vm describe {name} --zone {location}"
-            out = subprocess.check_output(command, shell=True)
+            subprocess.check_output(command, shell=True)
             print(f"🚀 TPU already exists in [bold]{location}[/bold] stopping script")
             return
         except subprocess.CalledProcessError:
@@ -288,7 +288,6 @@ def ls(details: bool = False):
     for name in cache:
         instance = cache[name]
         zone = instance["zone"]
-        state_str = ""
         if details:
             state = get_state(name, zone)
             if state == "READY":
@@ -321,7 +320,7 @@ def rm(name: str):
     with open(os.path.join(CUR_DIR, CACHE_FILE), "w") as f:
         json.dump(cache, f, indent=2)
     print(f"✅ TPU [bold blue]{name}[/bold blue] deleted")
-    print(f"[bold orange]Note:[/bold orange] check if disks need to be deleted too.")
+    print("[bold orange]Note:[/bold orange] check if disks need to be deleted too.")
 
 
 if __name__ == "__main__":
