@@ -133,16 +133,6 @@ def update_ssh_config(name: str, zone: str):
                 lines.append(f"  IdentityFile {config.ssh_identity_file}\n")
     with open(os.path.expanduser("~/.ssh/config"), "w") as f:
         f.writelines(lines)
-    print("Updating ~/.ssh/know_hosts")
-    with open(os.path.expanduser("~/.ssh/known_hosts"), "r") as f:
-        lines = f.readlines()
-    # remove previous entry using the same ip
-    lines = [line for line in lines if ext_ip not in line]
-    # This is not great, because it bypasses ssh security check, but that's ok for these VMs
-    new_entry = subprocess.getoutput(f"ssh-keyscan -H {ext_ip}")
-    lines.append(new_entry)
-    with open(os.path.expanduser("~/.ssh/known_hosts"), "w") as f:
-        f.writelines(lines)
 
 
 def restart_tpu(name: str, zone: str):
