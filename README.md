@@ -6,8 +6,8 @@ There are several subcommads, for now:
 - create
 - restart
 - stop
-- cache
-- delete
+- ls
+- rm
 
 ## Legacy
 
