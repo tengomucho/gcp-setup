@@ -12,8 +12,9 @@ from rich.console import Console
 
 
 CUR_DIR = os.path.dirname(os.path.abspath(__file__))
-CACHE_FILE = "cache.json"
-CONFIG_FILE = "~/.get-tpu-config.json"
+CONFIG_DIR = os.path.expanduser("~/.get-tpu")
+CACHE_FILE = os.path.join(CONFIG_DIR, "cache.json")
+CONFIG_FILE = os.path.join(CONFIG_DIR, "config.json")
 
 # retrieved with gcloud compute tpus locations list --format=json
 # manually resorted to to have europe first, then us, then asia
@@ -65,7 +66,7 @@ def _run(cmd: str):
 
 
 def get_cache():
-    cache_path = os.path.join(CUR_DIR, CACHE_FILE)
+    cache_path = CACHE_FILE
     if not os.path.exists(cache_path):
         return {}
     with open(cache_path, "r") as f:
@@ -74,7 +75,7 @@ def get_cache():
 
 def get_config():
     config = Config()
-    config_path = os.path.expanduser(CONFIG_FILE)
+    config_path = CONFIG_FILE
     try:
         with open(config_path, "r") as f:
             data = json.load(f)
@@ -192,7 +193,9 @@ def create(
                 f"Updating cache with [bold blue]{name}[/bold blue] in [bold]{location}[/bold]..."
             )
             cache[name] = {"type": accelerator_type, "zone": location}
-            with open(os.path.join(CUR_DIR, CACHE_FILE), "w") as f:
+            if not os.access(CONFIG_DIR, os.F_OK):
+                os.mkdirs(CONFIG_DIR)
+            with open(CACHE_FILE, "w") as f:
                 json.dump(cache, f, indent=2)
             print("🧾 Copying setup script")
             _run(
@@ -317,7 +320,9 @@ def rm(name: str):
         print(f"❌ TPU {name} could not be deleted.")
         return
     del cache[name]
-    with open(os.path.join(CUR_DIR, CACHE_FILE), "w") as f:
+    if not os.access(CONFIG_DIR, os.F_OK):
+        os.mkdirs(CONFIG_DIR)
+    with open(CACHE_FILE, "w") as f:
         json.dump(cache, f, indent=2)
     print(f"✅ TPU [bold blue]{name}[/bold blue] deleted")
     print("[bold orange]Note:[/bold orange] check if disks need to be deleted too.")
