@@ -3,16 +3,12 @@
 args=("$@")
 cur_dir=$(dirname "$0")
 
-if [ ! -d "$cur_dir/.venv-get-tpu" ]; then
-    echo "Error: Directory $cur_dir/.venv-get-tpu does not exist, creating it"
-    python3 -m venv $cur_dir/.venv-get-tpu
-    source $cur_dir/.venv-get-tpu/bin/activate
-
-    pip install -U pip
-    pip install typer
+# Test if uv is installed
+if ! command -v uv &> /dev/null; then
+    echo "uv could not be found, installing it"
+    curl -fsSL https://astral.sh/uv/install.sh | bash
 fi
 
-
-source $cur_dir/.venv-get-tpu/bin/activate
-
-python $cur_dir/get-tpu.py "${args[@]}"
+cd $cur_dir
+uv sync
+uv run get-tpu.py "${args[@]}"
