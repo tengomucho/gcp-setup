@@ -327,6 +327,23 @@ def rm(name: str):
     print(f"✅ TPU [bold blue]{name}[/bold blue] deleted")
     print("[bold orange]Note:[/bold orange] check if disks need to be deleted too.")
 
+@app.command()
+def print_config():
+    print("[bold green]Printing configuration[bold green]")
+    if not os.path.exists(CONFIG_FILE):
+        print(f"❌ Config file not found at {CONFIG_FILE}, create it first.")
+        return
+    else:
+        print(f"Config file found at {CONFIG_FILE}")
+    config = get_config()
+    print(f"TPU name prefix: {config.tpu_name_prefix}")
+    print(f"Extra startup script: {config.extra_startup_script}")
+    print(f"SSH identity file: {config.ssh_identity_file}")
+    if os.path.exists(CACHE_FILE):
+        print(f"Cache file found at {CACHE_FILE}")
+    else:
+        print(f"❌ Cache file not found at {CACHE_FILE}")
+        return
 
 if __name__ == "__main__":
     app()
