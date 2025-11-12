@@ -9,6 +9,7 @@ import getpass
 from rich import print
 from rich.table import Table
 from rich.console import Console
+import time
 
 
 CUR_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -92,21 +93,24 @@ def get_project():
     return value
 
 
+def list_tpus(zone: str):
+    desc = subprocess.getoutput(f"gcloud compute tpus tpu-vm list --zone {zone} --format json")
+    # convert to json
+    desc = json.loads(desc)
+    return desc
+
 def get_ext_ip(name: str, zone: str):
-    output_with_ip = subprocess.getoutput(
-        f"gcloud compute tpus tpu-vm describe --zone={zone} {name}"
-    )
-    line_with_ip = [
-        line for line in output_with_ip.split("\n") if "externalIp" in line
-    ][0]
-    ext_ip = line_with_ip.split(":")[1].strip()
-    return ext_ip
+    desc = list_tpus(zone)
+    filtered_desc = [item for item in desc if item["name"].endswith(name)]
+    cur_tpu = filtered_desc[0]
+    external_ip = cur_tpu["networkEndpoints"][0]["accessConfig"]["externalIp"] # type: ignore
+    return external_ip
 
 
 def get_state(name: str, zone: str):
-    desc = subprocess.getoutput(f"gcloud compute tpus describe {name} --zone {zone}")
-    lines = desc.split("\n")
-    state = [line for line in lines if "state" in line][0].split(":")[1].strip()
+    desc = list_tpus(zone)
+    filtered_desc = [item for item in desc if item["name"].endswith(name)]
+    state = filtered_desc[0]["state"]
     return state
 
 
@@ -149,10 +153,44 @@ def restart_tpu(name: str, zone: str):
         print(f"🚀 TPU is ready at {ext_ip}, nothing to do.")
         return
 
-    print(f"🚀 TPU [bold blue]{name}[/bold blue] is available, restarting..")
+    print(f"🚀 TPU [bold blue]{name}[/bold blue] is available, restarting at {time.time()}...")
+    start_time = time.time()
     _run(f"gcloud compute tpus tpu-vm start {name} --zone {zone}")
     update_ssh_config(name, zone)
+    print(f"✅ Done! Restarted [bold green]{name}[/bold green] in {time.time() - start_time} seconds")
+
+
+def install_tpu_script(name: str, location: str, project: str, config: Config):
+    print("🧾 Copying setup script")
+    _run(
+        f"gcloud compute tpus tpu-vm scp --zone {location} setup.sh {name}: --project {project}"
+    )
+    print("🤖 Retrieving IP and updating local ssh settings")
+    update_ssh_config(name, location)
+    print("🏃 Running install script")
+    _run(
+        f"gcloud compute tpus tpu-vm ssh --zone {location} {name} --project {project} --command='bash setup.sh'"
+    )
+    print()
+    if config.extra_startup_script:
+        print(f"🔧 Running extra startup script {config.extra_startup_script}")
+        subprocess.check_call(
+            f"{config.extra_startup_script} {name} {location}", shell=True
+        )
+
     print(f"✅ Done! You can now use [bold green]{name}[/bold green]")
+
+    return
+
+@app.command()
+def reinstall(name: str):
+    cache = get_cache()
+    if name not in cache:
+        raise ValueError(f"❌ TPU {name} not found in cache, cannot reinstall it.")
+    instance = cache[name]
+    location = instance["zone"]
+    project = get_project()
+    install_tpu_script(name, location, project, get_config())
 
 
 @app.command()
@@ -177,18 +215,18 @@ def create(
     for location in locations:
         print(f"\nTrying to create a TPU VM in [bold]{location}[/bold]...")
         name = f"{config.tpu_name_prefix}{location}"
-        try:
-            print("First check if the TPU is already created...")
-            command = f"gcloud compute tpus tpu-vm describe {name} --zone {location}"
-            subprocess.check_output(command, shell=True)
+        print("First check if the TPU is already created...")
+        desc = list_tpus(location)
+        if len(desc) > 0:
             print(f"🚀 TPU already exists in [bold]{location}[/bold] stopping script")
             return
-        except subprocess.CalledProcessError:
-            print("TPU not found, creating...")
+
+        print("TPU not found, creating at {time.time()}...")
+        start_time = time.time()
         try:
             command = f"gcloud alpha compute tpus tpu-vm create {name} --zone {location} --accelerator-type={accelerator_type} --version={software_version}"
             _run(command)
-            print(f"🚀 TPU created in [bold]{location}[/bold]")
+            print(f"🚀 TPU created in [bold]{location}[/bold] in {time.time() - start_time} seconds")
             print(
                 f"Updating cache with [bold blue]{name}[/bold blue] in [bold]{location}[/bold]..."
             )
@@ -197,24 +235,7 @@ def create(
                 os.mkdirs(CONFIG_DIR)
             with open(CACHE_FILE, "w") as f:
                 json.dump(cache, f, indent=2)
-            print("🧾 Copying setup script")
-            _run(
-                f"gcloud compute tpus tpu-vm scp --zone {location} setup.sh {name}: --project {project}"
-            )
-            print("🤖 Retrieving IP and updating local ssh settings")
-            update_ssh_config(name, location)
-            print("🏃 Running install script")
-            _run(
-                f"gcloud compute tpus tpu-vm ssh --zone {location} {name} --project {project} --command='bash setup.sh'"
-            )
-            print()
-            if config.extra_startup_script:
-                print(f"🔧 Running extra startup script {config.extra_startup_script}")
-                subprocess.check_call(
-                    f"{config.extra_startup_script} {name} {location}", shell=True
-                )
-
-            print(f"✅ Done! You can now use [bold green]{name}[/bold green]")
+            install_tpu_script(name, location, project, config)
             return
         except subprocess.CalledProcessError:
             print(
