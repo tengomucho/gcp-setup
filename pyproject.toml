@@ -8,3 +8,9 @@ dependencies = [
     "typer",
     "rich",
 ]
+
+[dependency-groups]
+dev = [
+    "ipdb>=0.13.13",
+    "ruff>=0.14.4",
+]
