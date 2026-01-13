@@ -10,6 +10,7 @@ from rich import print
 from rich.table import Table
 from rich.console import Console
 import time
+import shutil
 
 
 CUR_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -138,6 +139,139 @@ def update_ssh_config(name: str, zone: str):
                 lines.append(f"  IdentityFile {config.ssh_identity_file}\n")
     with open(os.path.expanduser("~/.ssh/config"), "w") as f:
         f.writelines(lines)
+    # Finally, cleanup known_hosts.
+    cleanup_known_hosts(name)
+
+
+def cleanup_known_hosts(ssh_alias: str):
+    """Remove all known_hosts entries matching the host keys of the given SSH alias.
+
+    This function:
+    1. Resolves the SSH alias to get hostname and port
+    2. Fetches all host keys from the server
+    3. Removes all known_hosts entries with matching keys
+
+    Args:
+        ssh_alias (str): SSH alias or hostname to clean up
+    """
+    print(f"Resolving SSH configuration for '{ssh_alias}'...")
+
+    # Use ssh -G to get the resolved configuration
+    try:
+        ssh_config = subprocess.getoutput(f"ssh -G {shlex.quote(ssh_alias)}")
+        host = None
+        port = None
+        for line in ssh_config.split('\n'):
+            if line.startswith('hostname '):
+                host = line.split()[1]
+            elif line.startswith('port '):
+                port = line.split()[1]
+
+        if not host:
+            print(f"[bold red]Error:[/bold red] Could not resolve hostname for '{ssh_alias}'")
+            return
+
+        print(f"Resolved to: {host}:{port}")
+        print()
+
+    except Exception as e:
+        print(f"[bold red]Error:[/bold red] Failed to resolve SSH configuration: {e}")
+        return
+
+    # Backup known_hosts
+    known_hosts = os.path.expanduser("~/.ssh/known_hosts")
+    if not os.path.exists(known_hosts):
+        print(f"No known_hosts file found at {known_hosts}")
+        return
+
+    backup_path = f"{known_hosts}.backup"
+    shutil.copy2(known_hosts, backup_path)
+    print(f"Backed up known_hosts to {backup_path}")
+    print()
+
+    # Fetch host keys from the server
+    print(f"Fetching host keys from {host}:{port}...")
+    try:
+        keyscan_cmd = f"ssh-keyscan -p {port} -t rsa,ecdsa,ed25519 {shlex.quote(host)} 2>/dev/null"
+        host_keys_output = subprocess.getoutput(keyscan_cmd)
+
+        if not host_keys_output or host_keys_output.strip() == "":
+            print(f"[bold red]Error:[/bold red] Could not fetch host keys from {host}:{port}")
+            return
+
+        # Extract all key parts (third field from each line)
+        keys_to_remove = []
+        for line in host_keys_output.split('\n'):
+            if line and not line.startswith('#'):
+                parts = line.split()
+                if len(parts) >= 3:
+                    keys_to_remove.append(parts[2])
+
+        if not keys_to_remove:
+            print("[bold red]Error:[/bold red] No valid keys found")
+            return
+
+        print(f"Found {len(keys_to_remove)} host key(s)")
+        print()
+
+    except Exception as e:
+        print(f"[bold red]Error:[/bold red] Failed to fetch host keys: {e}")
+        return
+
+    # Read known_hosts and find matching entries
+    try:
+        with open(known_hosts, 'r') as f:
+            lines = f.readlines()
+
+        # Find all matching entries
+        matching_hosts = set()
+        matching_lines = []
+
+        for line in lines:
+            for key in keys_to_remove:
+                if key in line:
+                    matching_lines.append(line)
+                    # Extract hostname/IP (first field)
+                    hostname = line.split()[0] if line.split() else ""
+                    if hostname:
+                        matching_hosts.add(hostname)
+                    break
+
+        if not matching_lines:
+            print("No entries found with these host keys")
+            return
+
+        # Show unique hostnames/IPs that will be removed
+        print("Entries that will be removed:")
+        for host in sorted(matching_hosts):
+            print(f"  {host}")
+
+        print()
+        print(f"Total entries to remove: {len(matching_lines)}")
+
+        # Remove all entries matching any of these keys
+        filtered_lines = []
+        for line in lines:
+            should_keep = True
+            for key in keys_to_remove:
+                if key in line:
+                    should_keep = False
+                    break
+            if should_keep:
+                filtered_lines.append(line)
+
+        # Write back to known_hosts
+        with open(known_hosts, 'w') as f:
+            f.writelines(filtered_lines)
+
+        print("[bold green]✅ Successfully cleaned up known_hosts[/bold green]")
+
+    except Exception as e:
+        print(f"[bold red]Error:[/bold red] Failed to update known_hosts: {e}")
+        # Restore backup
+        if os.path.exists(backup_path):
+            shutil.copy2(backup_path, known_hosts)
+            print("Restored known_hosts from backup")
 
 
 def restart_tpu(name: str, zone: str):
