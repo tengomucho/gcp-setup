@@ -196,7 +196,6 @@ def cleanup_known_hosts(ssh_alias: str):
         host_keys_output = subprocess.getoutput(keyscan_cmd)
 
         if not host_keys_output or host_keys_output.strip() == "":
-            print(f"[bold red]Error:[/bold red] Could not fetch host keys from {host}:{port}")
             return
 
         # Extract all key parts (third field from each line)
@@ -208,14 +207,9 @@ def cleanup_known_hosts(ssh_alias: str):
                     keys_to_remove.append(parts[2])
 
         if not keys_to_remove:
-            print("[bold red]Error:[/bold red] No valid keys found")
             return
 
-        print(f"Found {len(keys_to_remove)} host key(s)")
-        print()
-
-    except Exception as e:
-        print(f"[bold red]Error:[/bold red] Failed to fetch host keys: {e}")
+    except Exception:
         return
 
     # Read known_hosts and find matching entries
@@ -499,6 +493,17 @@ def print_config():
     else:
         print(f"❌ Cache file not found at {CACHE_FILE}")
         return
+
+@app.command()
+def cleanup_ssh_hosts(name: str|None = None):
+    cache = get_cache()
+    if name is not None:
+        cleanup_known_hosts(name)
+    else:
+        for element in cache:
+            cleanup_known_hosts(element)
+    print("✅ Done! Known_hosts cleaned up")
+
 
 if __name__ == "__main__":
     app()
