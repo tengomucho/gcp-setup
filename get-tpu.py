@@ -58,8 +58,8 @@ app = typer.Typer()
 @dataclass
 class Config:
     tpu_name_prefix: str = "tpu-vm-"
-    extra_startup_script: str = None
-    ssh_identity_file: str = None
+    extra_startup_script: str | None = None
+    ssh_identity_file: str | None = None
 
 
 def _run(cmd: str):
@@ -325,7 +325,7 @@ def reinstall(name: str):
 def create(
     accelerator_type: str = "v5litepod-8",
     software_version: str = "v2-alpha-tpuv5-lite",
-    location: str = None,
+    location: str | None = None,
 ):
     print("[bold green]Creating TPU[bold green]")
     cache = get_cache()
@@ -360,7 +360,7 @@ def create(
             )
             cache[name] = {"type": accelerator_type, "zone": location}
             if not os.access(CONFIG_DIR, os.F_OK):
-                os.mkdirs(CONFIG_DIR)
+                os.makedirs(CONFIG_DIR)
             with open(CACHE_FILE, "w") as f:
                 json.dump(cache, f, indent=2)
             install_tpu_script(name, location, project, config)
@@ -373,7 +373,7 @@ def create(
 
 
 @app.command()
-def restart(name: str = None):
+def restart(name: str | None = None):
     cache = get_cache()
     print("[bold green]Restarting TPU[bold green]")
     if name:
@@ -398,7 +398,7 @@ def restart(name: str = None):
 
 
 @app.command()
-def stop(name: str = None):
+def stop(name: str | None = None):
     cache = get_cache()
     if name:
         if name not in cache:
@@ -470,7 +470,7 @@ def rm(name: str):
         return
     del cache[name]
     if not os.access(CONFIG_DIR, os.F_OK):
-        os.mkdirs(CONFIG_DIR)
+        os.makedirs(CONFIG_DIR)
     with open(CACHE_FILE, "w") as f:
         json.dump(cache, f, indent=2)
     print(f"✅ TPU [bold blue]{name}[/bold blue] deleted")
