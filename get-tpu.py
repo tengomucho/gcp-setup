@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from datetime import datetime
 import typer
 import json
 import os
@@ -349,7 +350,7 @@ def create(
             print(f"🚀 TPU already exists in [bold]{location}[/bold] stopping script")
             return
 
-        print("TPU not found, creating at {time.time()}...")
+        print(f"TPU not found, creating at {datetime.now().isoformat()}...")
         start_time = time.time()
         try:
             command = f"gcloud alpha compute tpus tpu-vm create {name} --zone {location} --accelerator-type={accelerator_type} --version={software_version}"
