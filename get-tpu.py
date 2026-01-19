@@ -347,8 +347,8 @@ def create(
         print("First check if the TPU is already created...")
         desc = list_tpus(location)
         if len(desc) > 0:
-            print(f"🚀 TPU already exists in [bold]{location}[/bold] stopping script")
-            return
+            print(f"🚀 TPU already exists in [bold]{location}[/bold], skipping this location.")
+            continue
 
         print(f"TPU not found, creating at {datetime.now().isoformat()}...")
         start_time = time.time()
