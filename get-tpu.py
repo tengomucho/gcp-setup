@@ -18,6 +18,7 @@ CUR_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_DIR = os.path.expanduser("~/.get-tpu")
 CACHE_FILE = os.path.join(CONFIG_DIR, "cache.json")
 CONFIG_FILE = os.path.join(CONFIG_DIR, "config.json")
+VERBOSE = os.getenv("VERBOSE", "0") == "1"
 
 # retrieved with gcloud compute tpus locations list --format=json
 # manually resorted to to have europe first, then us, then asia
@@ -38,6 +39,8 @@ LOCATIONS = [
     "us-central1-f",
     "us-east1-c",
     "us-east1-d",
+    "us-east4-a",
+    "us-east4-b",
     "us-east5-a",
     "us-east5-b",
     "us-east5-c",
@@ -64,6 +67,8 @@ class Config:
 
 
 def _run(cmd: str):
+    if VERBOSE:
+        print(f"[bold blue]Running command:[/bold blue] {cmd}")
     split_cmd = shlex.split(cmd)
     subprocess.check_call(split_cmd)
 
