@@ -293,7 +293,7 @@ def restart_tpu(name: str, zone: str):
         return
 
     print(
-        f"🚀 TPU [bold blue]{name}[/bold blue] is available, restarting at {time.time()}..."
+        f"🚀 TPU [bold blue]{name}[/bold blue] is available, restarting at {datetime.now().isoformat()}..."
     )
     start_time = time.time()
     _run(f"gcloud compute tpus tpu-vm start {name} --zone {zone}")
