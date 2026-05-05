@@ -1,18 +1,18 @@
-from dataclasses import dataclass
-from datetime import datetime
-import typer
+import getpass
 import json
 import os
-from collections import OrderedDict
-import subprocess
 import shlex
-import getpass
-from rich import print
-from rich.table import Table
-from rich.console import Console
-import time
 import shutil
+import subprocess
+import time
+from collections import OrderedDict
+from dataclasses import dataclass
+from datetime import datetime
 
+import typer
+from rich import print
+from rich.console import Console
+from rich.table import Table
 
 CUR_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_DIR = os.path.expanduser("~/.get-tpu")
@@ -101,16 +101,19 @@ def get_project():
 
 
 def list_tpus(zone: str):
-    desc = subprocess.getoutput(f"gcloud compute tpus tpu-vm list --zone {zone} --format json")
+    desc = subprocess.getoutput(
+        f"gcloud compute tpus tpu-vm list --zone {zone} --format json"
+    )
     # convert to json
     desc = json.loads(desc)
     return desc
+
 
 def get_ext_ip(name: str, zone: str):
     desc = list_tpus(zone)
     filtered_desc = [item for item in desc if item["name"].endswith(name)]
     cur_tpu = filtered_desc[0]
-    external_ip = cur_tpu["networkEndpoints"][0]["accessConfig"]["externalIp"] # type: ignore
+    external_ip = cur_tpu["networkEndpoints"][0]["accessConfig"]["externalIp"]  # type: ignore
     return external_ip
 
 
@@ -167,14 +170,16 @@ def cleanup_known_hosts(ssh_alias: str):
         ssh_config = subprocess.getoutput(f"ssh -G {shlex.quote(ssh_alias)}")
         host = None
         port = None
-        for line in ssh_config.split('\n'):
-            if line.startswith('hostname '):
+        for line in ssh_config.split("\n"):
+            if line.startswith("hostname "):
                 host = line.split()[1]
-            elif line.startswith('port '):
+            elif line.startswith("port "):
                 port = line.split()[1]
 
         if not host:
-            print(f"[bold red]Error:[/bold red] Could not resolve hostname for '{ssh_alias}'")
+            print(
+                f"[bold red]Error:[/bold red] Could not resolve hostname for '{ssh_alias}'"
+            )
             return
 
         print(f"Resolved to: {host}:{port}")
@@ -206,8 +211,8 @@ def cleanup_known_hosts(ssh_alias: str):
 
         # Extract all key parts (third field from each line)
         keys_to_remove = []
-        for line in host_keys_output.split('\n'):
-            if line and not line.startswith('#'):
+        for line in host_keys_output.split("\n"):
+            if line and not line.startswith("#"):
                 parts = line.split()
                 if len(parts) >= 3:
                     keys_to_remove.append(parts[2])
@@ -220,7 +225,7 @@ def cleanup_known_hosts(ssh_alias: str):
 
     # Read known_hosts and find matching entries
     try:
-        with open(known_hosts, 'r') as f:
+        with open(known_hosts, "r") as f:
             lines = f.readlines()
 
         # Find all matching entries
@@ -261,7 +266,7 @@ def cleanup_known_hosts(ssh_alias: str):
                 filtered_lines.append(line)
 
         # Write back to known_hosts
-        with open(known_hosts, 'w') as f:
+        with open(known_hosts, "w") as f:
             f.writelines(filtered_lines)
 
         print("[bold green]✅ Successfully cleaned up known_hosts[/bold green]")
@@ -287,11 +292,15 @@ def restart_tpu(name: str, zone: str):
         print(f"🚀 TPU is ready at {ext_ip}, nothing to do.")
         return
 
-    print(f"🚀 TPU [bold blue]{name}[/bold blue] is available, restarting at {time.time()}...")
+    print(
+        f"🚀 TPU [bold blue]{name}[/bold blue] is available, restarting at {time.time()}..."
+    )
     start_time = time.time()
     _run(f"gcloud compute tpus tpu-vm start {name} --zone {zone}")
     update_ssh_config(name, zone)
-    print(f"✅ Done! Restarted [bold green]{name}[/bold green] in {time.time() - start_time} seconds")
+    print(
+        f"✅ Done! Restarted [bold green]{name}[/bold green] in {time.time() - start_time} seconds"
+    )
 
 
 def install_tpu_script(name: str, location: str, project: str, config: Config):
@@ -315,6 +324,7 @@ def install_tpu_script(name: str, location: str, project: str, config: Config):
     print(f"✅ Done! You can now use [bold green]{name}[/bold green]")
 
     return
+
 
 @app.command()
 def reinstall(name: str):
@@ -352,7 +362,9 @@ def create(
         print("First check if the TPU is already created...")
         desc = list_tpus(location)
         if len(desc) > 0:
-            print(f"🚀 TPU already exists in [bold]{location}[/bold], skipping this location.")
+            print(
+                f"🚀 TPU already exists in [bold]{location}[/bold], skipping this location."
+            )
             continue
 
         print(f"TPU not found, creating at {datetime.now().isoformat()}...")
@@ -360,7 +372,9 @@ def create(
         try:
             command = f"gcloud alpha compute tpus tpu-vm create {name} --zone {location} --accelerator-type={accelerator_type} --version={software_version}"
             _run(command)
-            print(f"🚀 TPU created in [bold]{location}[/bold] in {time.time() - start_time} seconds")
+            print(
+                f"🚀 TPU created in [bold]{location}[/bold] in {time.time() - start_time} seconds"
+            )
             print(
                 f"Updating cache with [bold blue]{name}[/bold blue] in [bold]{location}[/bold]..."
             )
@@ -372,9 +386,7 @@ def create(
             install_tpu_script(name, location, project, config)
             return
         except subprocess.CalledProcessError:
-            print(
-                f"❌ TPU not available in [bold]{location}[/bold]"
-            )
+            print(f"❌ TPU not available in [bold]{location}[/bold]")
             continue
 
 
@@ -387,7 +399,7 @@ def restart(name: str | None = None):
             print(f"❌ TPU {name} not found in cache, cannot stop it.")
             return -1
         print(f"Restarting TPU [bold blue]{name}[/bold blue]...")
-        cache = { name : cache[name] }
+        cache = {name: cache[name]}
     else:
         print(f"{len(cache)} elements in cache, trying to resume one of them...")
 
@@ -411,7 +423,7 @@ def stop(name: str | None = None):
             print(f"❌ TPU {name} not found in cache, cannot stop it.")
             return -1
         print(f"Stopping TPU [bold blue]{name}[/bold blue]...")
-        cache = { name : cache[name] }
+        cache = {name: cache[name]}
     else:
         print("[bold green]Stopping TPU[bold green]")
         print(
@@ -482,6 +494,7 @@ def rm(name: str):
     print(f"✅ TPU [bold blue]{name}[/bold blue] deleted")
     print("[bold orange]Note:[/bold orange] check if disks need to be deleted too.")
 
+
 @app.command()
 def print_config():
     print("[bold green]Printing configuration[bold green]")
@@ -500,8 +513,9 @@ def print_config():
         print(f"❌ Cache file not found at {CACHE_FILE}")
         return
 
+
 @app.command()
-def cleanup_ssh_hosts(name: str|None = None):
+def cleanup_ssh_hosts(name: str | None = None):
     cache = get_cache()
     if name is not None:
         cleanup_known_hosts(name)
