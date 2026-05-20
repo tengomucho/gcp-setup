@@ -81,6 +81,54 @@ def get_cache():
         return json.load(f, object_pairs_hook=OrderedDict)
 
 
+def _create_config_interactively() -> Config:
+    config = Config()
+    username = getpass.getuser()
+    suggested_prefix = f"{username}-tpu-dev-"
+
+    print(f"\nNo config file found at [bold]{CONFIG_FILE}[/bold]. Let's create one.")
+    print()
+
+    ok = typer.confirm(
+        f"You can define a prefix for your TPU instances. Suggested: '{suggested_prefix}'. Is it ok?",
+        default=True,
+    )
+    if ok:
+        config.tpu_name_prefix = suggested_prefix
+    else:
+        config.tpu_name_prefix = typer.prompt(
+            "Which prefix do you want?", default=suggested_prefix
+        )
+
+    script_path = typer.prompt(
+        "\nYou can define a path to a script invoked after creating the TPU "
+        "(called with tpu_name and zone as args). Press return to leave empty",
+        default="",
+    )
+    config.extra_startup_script = script_path if script_path else None
+
+    identity_file = typer.prompt(
+        "\nIndicate the path of the SSH identity file you want to use. Press return to leave empty",
+        default="",
+    )
+    config.ssh_identity_file = identity_file if identity_file else None
+
+    if not os.access(CONFIG_DIR, os.F_OK):
+        os.makedirs(CONFIG_DIR)
+    with open(CONFIG_FILE, "w") as f:
+        json.dump(
+            {
+                "tpu_name_prefix": config.tpu_name_prefix,
+                "extra_startup_script": config.extra_startup_script,
+                "ssh_identity_file": config.ssh_identity_file,
+            },
+            f,
+            indent=2,
+        )
+    print(f"\n[bold green]Config saved to {CONFIG_FILE}[/bold green]")
+    return config
+
+
 def get_config():
     config = Config()
     config_path = CONFIG_FILE
@@ -90,7 +138,7 @@ def get_config():
             for key in data:
                 setattr(config, key, data[key])
     except FileNotFoundError:
-        print(f"Config file not found at {config_path}, using default values.")
+        config = _create_config_interactively()
     return config
 
 
