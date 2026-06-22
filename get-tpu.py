@@ -387,8 +387,8 @@ def reinstall(name: str):
 
 @app.command()
 def create(
-    accelerator_type: str = "v5litepod-8",
-    software_version: str = "v2-alpha-tpuv5-lite",
+    accelerator_type: str = "v6e-4",
+    software_version: str = "v2-alpha-tpuv6e",
     location: str | None = None,
 ):
     print("[bold green]Creating TPU[bold green]")
