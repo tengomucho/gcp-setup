@@ -172,6 +172,14 @@ def get_state(name: str, zone: str):
     return state
 
 
+def describe_queued_resource(queued_resource_id: str, zone: str) -> dict:
+    out = subprocess.getoutput(
+        f"gcloud alpha compute tpus queued-resources describe"
+        f" {queued_resource_id} --zone {zone} --format json"
+    )
+    return json.loads(out)
+
+
 def update_ssh_config(name: str, zone: str):
     print(
         f"TPU [bold blue]{name}[/bold blue] restarted, updating local IP/ssh records."
@@ -592,6 +600,63 @@ def flex_start(
         f"\n✅ Queued resource [bold blue]{queued_resource_id}[/bold blue] submitted."
         f" Use [bold]flex-status[/bold] to monitor its state."
     )
+
+
+_STATE_COLORS = {
+    "ACTIVE": "bold green",
+    "WAITING_FOR_RESOURCES": "yellow",
+    "PROVISIONING": "yellow",
+    "FAILED": "bold red",
+    "SUSPENDING": "red",
+    "SUSPENDED": "red",
+}
+
+
+@app.command()
+def flex_status(name: str | None = None):
+    cache = get_cache()
+    flex_entries = {k: v for k, v in cache.items() if v.get("kind") == "flex-start"}
+
+    if not flex_entries:
+        print("No flex-start entries found in cache.")
+        return
+
+    if name is not None:
+        if name not in flex_entries:
+            print(f"❌ [bold blue]{name}[/bold blue] not found in cache or is not a flex-start entry.")
+            return
+        flex_entries = {name: flex_entries[name]}
+
+    table = Table("Name", "Zone", "Type", "QR State", "VM State", "Queued Resource ID")
+    for node_id, instance in flex_entries.items():
+        zone = instance["zone"]
+        qr_id = instance["queued_resource_id"]
+        try:
+            info = describe_queued_resource(qr_id, zone)
+            raw_state = info.get("state", {})
+            state = raw_state.get("state", "UNKNOWN") if isinstance(raw_state, dict) else str(raw_state)
+        except Exception:
+            state = "ERROR"
+        qr_color = _STATE_COLORS.get(state, "white")
+
+        if state == "ACTIVE":
+            try:
+                vm_state = get_state(node_id, zone)
+            except Exception:
+                vm_state = "UNKNOWN"
+            vm_color = "bold green" if vm_state == "READY" else "yellow"
+            vm_cell = f"[{vm_color}]{vm_state}[/{vm_color}]"
+        else:
+            vm_cell = "-"
+
+        table.add_row(
+            node_id, zone, instance["type"],
+            f"[{qr_color}]{state}[/{qr_color}]",
+            vm_cell,
+            qr_id,
+        )
+
+    Console().print(table)
 
 
 @app.command()
