@@ -544,6 +544,57 @@ def rm(name: str):
 
 
 @app.command()
+def flex_start(
+    zone: str,
+    accelerator_type: str = "v6e-4",
+    software_version: str = "v2-alpha-tpuv6e",
+    max_run_duration: str = "9h",
+):
+    config = get_config()
+    cache = get_cache()
+    node_id = f"{config.tpu_name_prefix}flex-{zone}"
+    queued_resource_id = node_id
+
+    print(f"[bold green]Submitting flex-start request[/bold green]")
+    print(f"  Node ID:            [bold blue]{node_id}[/bold blue]")
+    print(f"  Zone:               [bold]{zone}[/bold]")
+    print(f"  Accelerator type:   {accelerator_type}")
+    print(f"  Runtime version:    {software_version}")
+    print(f"  Max run duration:   {max_run_duration}")
+
+    command = (
+        f"gcloud alpha compute tpus queued-resources create {queued_resource_id}"
+        f" --zone={zone}"
+        f" --accelerator-type={accelerator_type}"
+        f" --runtime-version={software_version}"
+        f" --node-id={node_id}"
+        f" --provisioning-model=flex-start"
+        f" --max-run-duration={max_run_duration}"
+    )
+    try:
+        _run(command)
+    except subprocess.CalledProcessError:
+        print(f"❌ Failed to submit flex-start request for [bold]{zone}[/bold]")
+        return
+
+    cache[node_id] = {
+        "type": accelerator_type,
+        "zone": zone,
+        "queued_resource_id": queued_resource_id,
+        "kind": "flex-start",
+    }
+    if not os.access(CONFIG_DIR, os.F_OK):
+        os.makedirs(CONFIG_DIR)
+    with open(CACHE_FILE, "w") as f:
+        json.dump(cache, f, indent=2)
+
+    print(
+        f"\n✅ Queued resource [bold blue]{queued_resource_id}[/bold blue] submitted."
+        f" Use [bold]flex-status[/bold] to monitor its state."
+    )
+
+
+@app.command()
 def print_config():
     print("[bold green]Printing configuration[bold green]")
     if not os.path.exists(CONFIG_FILE):
