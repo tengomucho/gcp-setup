@@ -384,6 +384,7 @@ def install_tpu_script(name: str, location: str, project: str, config: Config):
 
 @app.command()
 def reinstall(name: str):
+    """Re-run the setup script on an existing TPU VM."""
     cache = get_cache()
     if name not in cache:
         raise ValueError(f"❌ TPU {name} not found in cache, cannot reinstall it.")
@@ -399,6 +400,7 @@ def create(
     software_version: str = "v2-alpha-tpuv6e",
     location: str | None = None,
 ):
+    """Create a new TPU VM, trying all zones until one succeeds."""
     print("[bold green]Creating TPU[bold green]")
     cache = get_cache()
     if cache:
@@ -448,6 +450,7 @@ def create(
 
 @app.command()
 def restart(name: str | None = None):
+    """Start a stopped TPU and update SSH config. If no name, tries all cached TPUs."""
     cache = get_cache()
     print("[bold green]Restarting TPU[bold green]")
     if name:
@@ -473,6 +476,7 @@ def restart(name: str | None = None):
 
 @app.command()
 def stop(name: str | None = None):
+    """Stop a running TPU to save cost. If no name, stops the first running one found."""
     cache = get_cache()
     if name:
         if name not in cache:
@@ -505,6 +509,7 @@ def stop(name: str | None = None):
 
 @app.command()
 def ls(details: bool = False):
+    """List cached TPUs. Use --details to fetch live state and IP from GCP."""
     print("[bold green]Listing cached TPUs[bold green]")
     cache = get_cache()
     if details:
@@ -529,6 +534,7 @@ def ls(details: bool = False):
 
 @app.command()
 def rm(name: str):
+    """Delete a TPU VM and remove it from cache."""
     print(f"[bold green]Deleting TPU {name}[bold green]")
     cache = get_cache()
     if name not in cache:
@@ -558,6 +564,7 @@ def flex_start(
     software_version: str = "v2-alpha-tpuv6e",
     max_run_duration: str = "9h",
 ):
+    """Submit a flex-start (spot-like) queued resource request for a TPU."""
     config = get_config()
     cache = get_cache()
     node_id = f"{config.tpu_name_prefix}flex-{zone}"
@@ -614,6 +621,7 @@ _STATE_COLORS = {
 
 @app.command()
 def flex_status(name: str | None = None):
+    """Show the status of flex-start queued resources. If no name, shows all."""
     cache = get_cache()
     flex_entries = {k: v for k, v in cache.items() if v.get("kind") == "flex-start"}
 
@@ -661,6 +669,7 @@ def flex_status(name: str | None = None):
 
 @app.command()
 def print_config():
+    """Show current config and cache file paths."""
     print("[bold green]Printing configuration[bold green]")
     if not os.path.exists(CONFIG_FILE):
         print(f"❌ Config file not found at {CONFIG_FILE}, create it first.")
@@ -680,6 +689,7 @@ def print_config():
 
 @app.command()
 def cleanup_ssh_hosts(name: str | None = None):
+    """Remove stale known_hosts entries for a TPU. If no name, cleans all cached."""
     cache = get_cache()
     if name is not None:
         cleanup_known_hosts(name)
