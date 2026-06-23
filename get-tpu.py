@@ -168,6 +168,8 @@ def get_ext_ip(name: str, zone: str):
 def get_state(name: str, zone: str):
     desc = list_tpus(zone)
     filtered_desc = [item for item in desc if item["name"].endswith(name)]
+    if not filtered_desc:
+        return "NOT FOUND"
     state = filtered_desc[0]["state"]
     return state
 
@@ -523,6 +525,8 @@ def ls(details: bool = False):
             state = get_state(name, zone)
             if state == "READY":
                 ip = get_ext_ip(name, zone)
+            elif state == "NOT FOUND":
+                ip = "N/A"
             else:
                 ip = ""
             tpu_type = instance["type"]
