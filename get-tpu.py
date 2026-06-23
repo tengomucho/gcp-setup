@@ -640,6 +640,7 @@ def flex_status(name: str | None = None):
         flex_entries = {name: flex_entries[name]}
 
     table = Table("Name", "Zone", "Type", "QR State", "VM State", "Queued Resource ID")
+    has_suspended = False
     for node_id, instance in flex_entries.items():
         zone = instance["zone"]
         qr_id = instance["queued_resource_id"]
@@ -650,6 +651,9 @@ def flex_status(name: str | None = None):
         except Exception:
             state = "ERROR"
         qr_color = _STATE_COLORS.get(state, "white")
+
+        if state == "SUSPENDED":
+            has_suspended = True
 
         if state == "ACTIVE":
             try:
@@ -669,6 +673,64 @@ def flex_status(name: str | None = None):
         )
 
     Console().print(table)
+
+    if has_suspended:
+        print("\nSuspended queued resources detected, running cleanup...")
+        flex_cleanup()
+
+
+@app.command()
+def flex_cleanup():
+    """Delete suspended queued resources from GCP and remove them from cache."""
+    cache = get_cache()
+    flex_entries = {k: v for k, v in cache.items() if v.get("kind") == "flex-start"}
+
+    if not flex_entries:
+        print("No flex-start entries found in cache.")
+        return
+
+    removed = []
+    for node_id, instance in flex_entries.items():
+        zone = instance["zone"]
+        qr_id = instance["queued_resource_id"]
+        try:
+            info = describe_queued_resource(qr_id, zone)
+            raw_state = info.get("state", {})
+            state = (
+                raw_state.get("state", "UNKNOWN")
+                if isinstance(raw_state, dict)
+                else str(raw_state)
+            )
+        except Exception:
+            state = "ERROR"
+
+        if state != "SUSPENDED":
+            continue
+
+        try:
+            _run(
+                f"gcloud alpha compute tpus queued-resources delete"
+                f" {qr_id} --zone {zone} --quiet"
+            )
+        except subprocess.CalledProcessError:
+            print(
+                f"❌ Could not delete queued resource"
+                f" [bold blue]{qr_id}[/bold blue]."
+            )
+            continue
+
+        del cache[node_id]
+        removed.append(node_id)
+        print(
+            f"✅ Removed [bold blue]{node_id}[/bold blue]"
+            f" (queued resource: {qr_id})"
+        )
+
+    if removed:
+        with open(CACHE_FILE, "w") as f:
+            json.dump(cache, f, indent=2)
+    else:
+        print("No suspended queued resources to clean up.")
 
 
 @app.command()
