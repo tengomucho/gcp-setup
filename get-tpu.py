@@ -3,6 +3,7 @@ import json
 import os
 import shlex
 import shutil
+import socket
 import subprocess
 import time
 from collections import OrderedDict
@@ -181,6 +182,29 @@ def get_state(name: str, zone: str):
         return "NOT FOUND"
     state = filtered_desc[0]["state"]
     return state
+
+
+def wait_for_ssh(name: str, zone: str, timeout: int = 120, interval: int = 5):
+    """Poll the TPU's external IP until port 22 accepts connections.
+
+    A TPU node can report ACTIVE/READY before its guest agent has finished
+    booting sshd and propagating the pushed SSH key. Hitting scp/ssh in that
+    window makes gcloud fall into its internal 10x5s retry loop with no
+    connect timeout, which can look like a multi-minute hang.
+    """
+    ext_ip = get_ext_ip(name, zone)
+    print(f"⏳ Waiting for SSH to become reachable on {ext_ip}:22...")
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            with socket.create_connection((ext_ip, 22), timeout=5):
+                print("✅ SSH port is open.")
+                return
+        except OSError:
+            time.sleep(interval)
+    print(
+        f"⚠️  Timed out waiting for SSH on {ext_ip}:22 after {timeout}s, proceeding anyway."
+    )
 
 
 def describe_queued_resource(queued_resource_id: str, zone: str) -> dict:
@@ -371,9 +395,12 @@ def restart_tpu(name: str, zone: str):
 
 
 def install_tpu_script(name: str, location: str, project: str, config: Config):
+    wait_for_ssh(name, location)
     print("🧾 Copying setup script")
     _run(
-        f"gcloud compute tpus tpu-vm scp --zone {location} setup.sh {name}: --project {project}"
+        f"gcloud compute tpus tpu-vm scp --zone {location}"
+        f" --scp-flag=-o --scp-flag=ConnectTimeout=10"
+        f" setup.sh {name}: --project {project}"
     )
     print("🤖 Retrieving IP and updating local ssh settings")
     update_ssh_config(name, location)
