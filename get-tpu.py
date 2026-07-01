@@ -70,7 +70,16 @@ def _run(cmd: str):
     if VERBOSE:
         print(f"[bold blue]Running command:[/bold blue] {cmd}")
     split_cmd = shlex.split(cmd)
-    subprocess.check_call(split_cmd)
+    result = subprocess.run(split_cmd, capture_output=True, text=True)
+    if result.stdout:
+        print(result.stdout, end="")
+    if result.stderr:
+        print(result.stderr, end="")
+    if result.returncode != 0:
+        raise subprocess.CalledProcessError(
+            result.returncode, split_cmd, output=result.stdout, stderr=result.stderr
+        )
+    return result.stdout
 
 
 def get_cache():
@@ -593,8 +602,30 @@ def flex_start(
     )
     try:
         _run(command)
-    except subprocess.CalledProcessError:
-        print(f"❌ Failed to submit flex-start request for [bold]{zone}[/bold]")
+    except subprocess.CalledProcessError as e:
+        stderr = e.stderr or ""
+        if "already exists" in stderr.lower():
+            print(
+                f"\n⚠️  A queued resource named [bold blue]{queued_resource_id}[/bold blue] already exists"
+                f" in [bold]{zone}[/bold] on GCP, but it wasn't in the local cache"
+                f" (someone likely created it outside this tool, or the cache was reset)."
+            )
+            print(
+                f"   Re-adding it to the local cache. Run [bold]flex-status[/bold] to check its state and\n"
+                f"   delete it properly."
+            )
+            cache[node_id] = {
+                "type": accelerator_type,
+                "zone": zone,
+                "queued_resource_id": queued_resource_id,
+                "kind": "flex-start",
+            }
+            if not os.access(CONFIG_DIR, os.F_OK):
+                os.makedirs(CONFIG_DIR)
+            with open(CACHE_FILE, "w") as f:
+                json.dump(cache, f, indent=2)
+        else:
+            print(f"❌ Failed to submit flex-start request for [bold]{zone}[/bold]")
         return
 
     cache[node_id] = {
