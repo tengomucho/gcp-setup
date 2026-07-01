@@ -567,6 +567,7 @@ def flex_start(
     accelerator_type: str = "v6e-4",
     software_version: str = "v2-alpha-tpuv6e",
     max_run_duration: str = "9h",
+    auto_reinstall: bool = typer.Option(False, "--reinstall", "-r", help="Poll every 5 s and run reinstall when ACTIVE"),
 ):
     """Submit a flex-start (spot-like) queued resource request for a TPU."""
     config = get_config()
@@ -611,6 +612,28 @@ def flex_start(
         f"\n✅ Queued resource [bold blue]{queued_resource_id}[/bold blue] submitted."
         f" Use [bold]flex-status[/bold] to monitor its state."
     )
+
+    if auto_reinstall:
+        print(f"\n[bold]Polling every 5 s for [bold blue]{node_id}[/bold blue] to become ACTIVE...[/bold]")
+        while True:
+            time.sleep(5)
+            try:
+                info = describe_queued_resource(queued_resource_id, zone)
+                raw_state = info.get("state", {})
+                state = raw_state.get("state", "UNKNOWN") if isinstance(raw_state, dict) else str(raw_state)
+            except Exception:
+                state = "ERROR"
+
+            color = _STATE_COLORS.get(state, "white")
+            print(f"  [{color}]{state}[/{color}]")
+
+            if state == "ACTIVE":
+                print(f"\n✅ Resource is ACTIVE — running reinstall on [bold blue]{node_id}[/bold blue]...")
+                reinstall(node_id)
+                break
+            elif state in ("SUSPENDED", "FAILED", "ERROR"):
+                print(f"\n❌ Resource entered terminal state [{color}]{state}[/{color}], aborting auto-reinstall.")
+                break
 
 
 _STATE_COLORS = {
