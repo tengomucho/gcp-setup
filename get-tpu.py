@@ -13,6 +13,7 @@ from datetime import datetime
 import typer
 from rich import print
 from rich.console import Console
+from rich.markup import escape
 from rich.table import Table
 
 CUR_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -73,9 +74,9 @@ def _run(cmd: str):
     split_cmd = shlex.split(cmd)
     result = subprocess.run(split_cmd, capture_output=True, text=True)
     if result.stdout:
-        print(result.stdout, end="")
+        print(escape(result.stdout), end="")
     if result.stderr:
-        print(result.stderr, end="")
+        print(escape(result.stderr), end="")
     if result.returncode != 0:
         raise subprocess.CalledProcessError(
             result.returncode, split_cmd, output=result.stdout, stderr=result.stderr
@@ -406,7 +407,9 @@ def install_tpu_script(name: str, location: str, project: str, config: Config):
     update_ssh_config(name, location)
     print("🏃 Running install script")
     _run(
-        f"gcloud compute tpus tpu-vm ssh --zone {location} {name} --project {project} --command='bash setup.sh'"
+        f"gcloud compute tpus tpu-vm ssh --zone {location} {name} --project {project}"
+        f" --ssh-flag=-o --ssh-flag=ConnectTimeout=10"
+        f" --command='bash setup.sh'"
     )
     print()
     if config.extra_startup_script:
