@@ -676,6 +676,7 @@ def flex_start(
 
     if auto_reinstall:
         print(f"\n[bold]Polling every 5 s for [bold blue]{node_id}[/bold blue] to become ACTIVE...[/bold]")
+        start_time = time.time()
         while True:
             time.sleep(5)
             try:
@@ -686,10 +687,11 @@ def flex_start(
                 state = "ERROR"
 
             color = _STATE_COLORS.get(state, "white")
-            print(f"  [{color}]{state}[/{color}]")
+            print(f"  [{color}]{state}[/{color}] ({datetime.now().isoformat()})")
 
             if state == "ACTIVE":
-                print(f"\n✅ Resource is ACTIVE — running reinstall on [bold blue]{node_id}[/bold blue]...")
+                elapsed = time.time() - start_time
+                print(f"\n✅ Resource is ACTIVE after {elapsed:.1f} secs. Starting reinstall...")
                 reinstall(node_id)
                 break
             elif state in ("SUSPENDED", "FAILED", "ERROR"):
