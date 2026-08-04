@@ -5,6 +5,7 @@ import shlex
 import shutil
 import socket
 import subprocess
+import tempfile
 import time
 from collections import OrderedDict
 from dataclasses import dataclass
@@ -30,6 +31,7 @@ REMOTE_INSTALL_TIMEOUT = 2700
 # Where the detached install writes its output on the TPU, and the markers used
 # to tell that output apart from gcloud's own chatter on the same stream.
 REMOTE_LOG = "tpu-setup.log"
+PAYLOAD_TAR = "get-tpu-payload.tar.gz"
 LOG_TAG = "__TPULOG__"
 RC_TAG = "__TPURC__"
 ROT_TAG = "__TPUROT__"
@@ -268,6 +270,7 @@ def remote_run_logged(
     script: str,
     log: str = REMOTE_LOG,
     timeout: int = REMOTE_INSTALL_TIMEOUT,
+    prepare: str = "",
 ):
     """Run a script on the TPU detached from the SSH channel, following its log.
 
@@ -283,11 +286,13 @@ def remote_run_logged(
     # Re-attach instead of restarting if a previous invocation left one running.
     # Liveness comes from a pid file rather than pgrep: the launch snippet has
     # "bash {script}" in its own argv, so pgrep -f would always match itself.
+    # `prepare` only runs when we actually launch, never when re-attaching: it
+    # would otherwise overwrite the files out from under a running install.
     launch = (
         f"cd ~;"
         f" if [ -f {pid_file} ] && kill -0 \"$(cat {pid_file})\" 2>/dev/null; then"
         f" echo 'install already running, attaching to its log';"
-        f" else rm -f {rc_file}; : > {log};"
+        f" else {prepare} rm -f {rc_file}; : > {log};"
         f" setsid nohup sh -c 'echo $$ >{pid_file};"
         f" bash {script} >{log} 2>&1; echo $? >{rc_file}'"
         f" </dev/null >/dev/null 2>&1 & fi"
@@ -561,29 +566,55 @@ def restart_tpu(name: str, zone: str):
     )
 
 
+def build_payload(tmpdir: str, config: Config) -> str:
+    """Collect everything the install needs into a single tarball.
+
+    Shipping one archive replaces the nine separate scp/ssh invocations this used
+    to take, and lets the whole install run as one remote process.
+    """
+    stage = os.path.join(tmpdir, "payload")
+    os.makedirs(stage)
+    for script in ("setup.sh", "run-all.sh"):
+        shutil.copy(os.path.join(CUR_DIR, script), stage)
+
+    if config.extra_startup_script:
+        extra = os.path.join(stage, "extra")
+        os.makedirs(extra)
+        print(f"🔧 Staging extra files with {config.extra_startup_script}")
+        subprocess.check_call(
+            f"{config.extra_startup_script} {shlex.quote(extra)}", shell=True
+        )
+
+    tar_path = os.path.join(tmpdir, PAYLOAD_TAR)
+    # COPYFILE_DISABLE keeps bsdtar on macOS from adding ._* AppleDouble entries.
+    _run(f"env COPYFILE_DISABLE=1 tar czf {tar_path} -C {stage} .", timeout=SCP_TIMEOUT)
+    return tar_path
+
+
 def install_tpu_script(name: str, location: str, project: str, config: Config):
     wait_for_ssh(name, location)
     wait_for_ssh_auth(name, location, project)
-    print("🧾 Copying setup script")
-    _run(
-        f"gcloud compute tpus tpu-vm scp --zone {location}"
-        f" --scp-flag=-o --scp-flag=ConnectTimeout=10"
-        f" setup.sh {name}: --project {project}",
-        timeout=SCP_TIMEOUT,
-    )
     print("🤖 Retrieving IP and updating local ssh settings")
     update_ssh_config(name, location)
-    remote_run_logged(name, location, project, "setup.sh")
-    print()
-    if config.extra_startup_script:
-        print(f"🔧 Running extra startup script {config.extra_startup_script}")
-        subprocess.check_call(
-            f"{config.extra_startup_script} {name} {location}", shell=True
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tar_path = build_payload(tmpdir, config)
+        print("🧾 Copying the install payload")
+        _run(
+            f"gcloud compute tpus tpu-vm scp --zone {location}"
+            f" --scp-flag=-o --scp-flag=ConnectTimeout=10"
+            f" {tar_path} {name}:{PAYLOAD_TAR} --project {project}",
+            timeout=SCP_TIMEOUT,
         )
 
+    remote_run_logged(
+        name,
+        location,
+        project,
+        "run-all.sh",
+        prepare=f"tar xzf {PAYLOAD_TAR} || exit 1;",
+    )
     print(f"✅ Done! You can now use [bold green]{name}[/bold green]")
-
-    return
 
 
 @app.command()

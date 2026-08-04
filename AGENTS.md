@@ -46,6 +46,30 @@ Set `VERBOSE=1` to see every `gcloud` command before it runs.
 
 All fields are optional; defaults are used if the file is missing.
 
+`extra_startup_script` is called as `script STAGE_DIR`. It must not talk to the
+TPU itself — it only writes local files into `STAGE_DIR`, which get packed into
+the install payload and unpacked into `~` on the TPU. If it writes a `run.sh`
+there, `run-all.sh` runs it after `setup.sh`. Anything under `STAGE_DIR/home/`
+mirrors `$HOME` on the TPU.
+
+## How an install runs
+
+`create` and `reinstall` both go through `install_tpu_script`, which:
+
+1. waits for port 22, then for a usable SSH session
+2. builds one payload tarball (`setup.sh`, `run-all.sh`, plus whatever the
+   extra-startup hook staged) and copies it over with a single `scp`
+3. unpacks it and runs `run-all.sh` **detached** under `setsid`/`nohup`, logging
+   to `~/tpu-setup.log` on the TPU, and follows that log
+
+Because the install is detached, losing the connection does not kill it. Re-run
+`reinstall` to reattach to a running install, or read the log directly:
+
+```bash
+ssh <tpu-name> 'tail -f ~/tpu-setup.log'   # progress
+ssh <tpu-name> 'cat ~/tpu-setup.log.rc'    # exit code, once finished
+```
+
 ## TPU name convention
 
 Names are `{tpu_name_prefix}{zone}`, e.g. `tpu-vm-europe-west4-a`.
