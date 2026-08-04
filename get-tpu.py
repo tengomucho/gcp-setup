@@ -131,8 +131,9 @@ def _create_config_interactively() -> Config:
         )
 
     script_path = typer.prompt(
-        "\nYou can define a path to a script invoked after creating the TPU "
-        "(called with tpu_name and zone as args). Press return to leave empty",
+        "\nYou can define a path to a script that stages extra files into the "
+        "install payload (called with a staging directory as its only arg). "
+        "Press return to leave empty",
         default="",
     )
     config.extra_startup_script = script_path if script_path else None
