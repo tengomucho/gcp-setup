@@ -27,6 +27,16 @@ VERBOSE = os.getenv("VERBOSE", "0") == "1"
 SCP_TIMEOUT = 300
 REMOTE_INSTALL_TIMEOUT = 2700
 
+# Where the detached install writes its output on the TPU, and the markers used
+# to tell that output apart from gcloud's own chatter on the same stream.
+REMOTE_LOG = "tpu-setup.log"
+LOG_TAG = "__TPULOG__"
+RC_TAG = "__TPURC__"
+ROT_TAG = "__TPUROT__"
+# 2s per tick, so a follower session lasts at most ~5 min before handing control
+# back to the local loop to re-check the overall deadline.
+FOLLOW_SESSION_TICKS = 150
+
 # retrieved with gcloud compute tpus locations list --format=json
 # manually resorted to to have europe first, then us, then asia
 LOCATIONS = [
@@ -210,8 +220,157 @@ def wait_for_ssh(name: str, zone: str, timeout: int = 120, interval: int = 5):
                 return
         except OSError:
             time.sleep(interval)
-    print(
-        f"⚠️  Timed out waiting for SSH on {ext_ip}:22 after {timeout}s, proceeding anyway."
+    raise RuntimeError(
+        f"❌ No answer on {ext_ip}:22 after {timeout}s. The node reports ready but is"
+        f" not accepting SSH — check its state before retrying."
+    )
+
+
+def wait_for_ssh_auth(
+    name: str, zone: str, project: str, attempts: int = 5, interval: int = 10
+):
+    """Confirm a real SSH session can be opened, not just that port 22 answers.
+
+    sshd can be listening before the guest agent has propagated the pushed key.
+    Failing here explicitly beats handing the problem to gcloud, which retries
+    10x5s internally and reports nothing useful.
+    """
+    for attempt in range(1, attempts + 1):
+        try:
+            _run(_ssh_command(name, zone, project, "true"), timeout=60)
+            print("✅ SSH authentication works.")
+            return
+        except (subprocess.CalledProcessError, RuntimeError):
+            if attempt == attempts:
+                raise RuntimeError(
+                    f"❌ Could not open an SSH session to {name} after {attempts}"
+                    f" attempts. The key may not be propagated yet."
+                ) from None
+            print(f"⏳ SSH not usable yet (attempt {attempt}/{attempts}), retrying...")
+            time.sleep(interval)
+
+
+def _ssh_command(name: str, zone: str, project: str, remote_cmd: str) -> str:
+    """Build a gcloud tpu-vm ssh invocation running remote_cmd."""
+    return (
+        f"gcloud compute tpus tpu-vm ssh --zone {zone} {name} --project {project}"
+        f" --ssh-flag=-o --ssh-flag=ConnectTimeout=10"
+        f" --ssh-flag=-o --ssh-flag=ServerAliveInterval=15"
+        f" --ssh-flag=-o --ssh-flag=ServerAliveCountMax=4"
+        f" --command={shlex.quote(remote_cmd)}"
+    )
+
+
+def remote_run_logged(
+    name: str,
+    zone: str,
+    project: str,
+    script: str,
+    log: str = REMOTE_LOG,
+    timeout: int = REMOTE_INSTALL_TIMEOUT,
+):
+    """Run a script on the TPU detached from the SSH channel, following its log.
+
+    The install takes 10-25 minutes and used to run in the foreground of a single
+    ssh channel, so anything that dropped that channel — an sshd restart from
+    unattended-upgrades, a laptop sleep, a flaky link — killed the install with
+    no log left behind. Here the script is launched under setsid/nohup writing to
+    ~/{log}, and a second session merely tails it. Losing the tail costs nothing:
+    we reattach at the line we got to, and the install keeps going regardless.
+    """
+    rc_file = f"{log}.rc"
+    pid_file = f"{log}.pid"
+    # Re-attach instead of restarting if a previous invocation left one running.
+    # Liveness comes from a pid file rather than pgrep: the launch snippet has
+    # "bash {script}" in its own argv, so pgrep -f would always match itself.
+    launch = (
+        f"cd ~;"
+        f" if [ -f {pid_file} ] && kill -0 \"$(cat {pid_file})\" 2>/dev/null; then"
+        f" echo 'install already running, attaching to its log';"
+        f" else rm -f {rc_file}; : > {log};"
+        f" setsid nohup sh -c 'echo $$ >{pid_file};"
+        f" bash {script} >{log} 2>&1; echo $? >{rc_file}'"
+        f" </dev/null >/dev/null 2>&1 & fi"
+    )
+    print(f"🏃 Running {script} on the TPU (detached, log: ~/{log})")
+    _run(_ssh_command(name, zone, project, launch), timeout=SCP_TIMEOUT)
+
+    # Log lines are tagged remotely so gcloud's own chatter on stderr cannot be
+    # mistaken for install output and throw off the resume offset.
+    offset = 1
+    attempt = 0
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        # Each session is capped so control always comes back here to re-check the
+        # deadline; an uncapped follower would be its own silent hang. It signals
+        # why it ended: ROT_TAG for hitting the cap (reattach quietly), RC_TAG for
+        # the script finishing, neither for a dropped channel.
+        #
+        # A polling tailer rather than `tail -F`: every command runs in the
+        # foreground and the loop is bounded, so the session always reaches EOF on
+        # its own. A backgrounded `tail -F` kept the pipe open after its watcher
+        # was killed and blocked the local read indefinitely.
+        follow = (
+            f"cd ~; n={offset}; i=0;"
+            f" while :; do"
+            f" t=$(wc -l <{log} 2>/dev/null | tr -d ' ' || echo 0);"
+            f' if [ "$t" -ge "$n" ]; then'
+            f" tail -n +$n {log} | sed 's/^/{LOG_TAG}/'; n=$((t+1)); fi;"
+            f" if [ -f {rc_file} ]; then break; fi;"
+            f" i=$((i+1));"
+            f" if [ $i -ge {FOLLOW_SESSION_TICKS} ]; then echo {ROT_TAG}; break; fi;"
+            f" sleep 2; done;"
+            f" [ -f {rc_file} ] && printf '{RC_TAG}%s\\n' \"$(cat {rc_file})\"; true"
+        )
+        cmd = _ssh_command(name, zone, project, follow)
+        if VERBOSE:
+            print(f"[bold blue]Running command:[/bold blue] {cmd}")
+        proc = subprocess.Popen(
+            shlex.split(cmd),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+        assert proc.stdout is not None  # stdout=PIPE always gives us one
+        rc = None
+        rotated = False
+        for line in proc.stdout:
+            if line.startswith(RC_TAG):
+                rc = int(line[len(RC_TAG) :].strip() or 1)
+                break
+            if line.startswith(ROT_TAG):
+                rotated = True
+                continue
+            if line.startswith(LOG_TAG):
+                offset += 1
+                line = line[len(LOG_TAG) :]
+            print(line, end="")
+        proc.stdout.close()
+        proc.terminate()
+        proc.wait()
+
+        if rc == 0:
+            return
+        if rc is not None:
+            raise RuntimeError(
+                f"❌ {script} exited {rc} on {name}."
+                f" Full log: ssh {name} 'cat ~/{log}'"
+            )
+        if rotated:
+            # Ran its full course: a normal session rotation, not a failure.
+            attempt = 0
+            continue
+        attempt += 1
+        backoff = min(60, 5 * 2 ** (attempt - 1))
+        print(
+            f"⚠️  Lost the log stream (attempt {attempt}); the install is still"
+            f" running on the TPU. Reattaching at line {offset} in {backoff}s..."
+        )
+        time.sleep(backoff)
+
+    raise RuntimeError(
+        f"❌ {script} did not finish within {timeout}s."
+        f" It may still be running: ssh {name} 'tail -f ~/{log}'"
     )
 
 
@@ -404,6 +563,7 @@ def restart_tpu(name: str, zone: str):
 
 def install_tpu_script(name: str, location: str, project: str, config: Config):
     wait_for_ssh(name, location)
+    wait_for_ssh_auth(name, location, project)
     print("🧾 Copying setup script")
     _run(
         f"gcloud compute tpus tpu-vm scp --zone {location}"
@@ -413,13 +573,7 @@ def install_tpu_script(name: str, location: str, project: str, config: Config):
     )
     print("🤖 Retrieving IP and updating local ssh settings")
     update_ssh_config(name, location)
-    print("🏃 Running install script")
-    _run(
-        f"gcloud compute tpus tpu-vm ssh --zone {location} {name} --project {project}"
-        f" --ssh-flag=-o --ssh-flag=ConnectTimeout=10"
-        f" --command='bash setup.sh'",
-        timeout=REMOTE_INSTALL_TIMEOUT,
-    )
+    remote_run_logged(name, location, project, "setup.sh")
     print()
     if config.extra_startup_script:
         print(f"🔧 Running extra startup script {config.extra_startup_script}")
