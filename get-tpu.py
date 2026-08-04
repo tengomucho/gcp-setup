@@ -13,7 +13,6 @@ from datetime import datetime
 import typer
 from rich import print
 from rich.console import Console
-from rich.markup import escape
 from rich.table import Table
 
 CUR_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -21,6 +20,12 @@ CONFIG_DIR = os.path.expanduser("~/.get-tpu")
 CACHE_FILE = os.path.join(CONFIG_DIR, "cache.json")
 CONFIG_FILE = os.path.join(CONFIG_DIR, "config.json")
 VERBOSE = os.getenv("VERBOSE", "0") == "1"
+
+# Timeouts for the ssh/scp steps of an install. The install script waits up to
+# APT_LOCK_TIMEOUT (see setup.sh) for unattended-upgrades to release the dpkg
+# lock, so the remote-run budget has to be comfortably larger than that.
+SCP_TIMEOUT = 300
+REMOTE_INSTALL_TIMEOUT = 2700
 
 # retrieved with gcloud compute tpus locations list --format=json
 # manually resorted to to have europe first, then us, then asia
@@ -68,20 +73,22 @@ class Config:
     ssh_identity_file: str | None = None
 
 
-def _run(cmd: str):
+def _run(cmd: str, timeout: int | None = None):
+    """Run a command, streaming its output live, and raise on failure or timeout.
+
+    Output is deliberately not captured: a remote apt waiting on the dpkg lock,
+    or a setup script mid-install, must be visible while it runs. Capturing it
+    turned every stall into a silent, unbounded hang.
+    """
     if VERBOSE:
         print(f"[bold blue]Running command:[/bold blue] {cmd}")
     split_cmd = shlex.split(cmd)
-    result = subprocess.run(split_cmd, capture_output=True, text=True)
-    if result.stdout:
-        print(escape(result.stdout), end="")
-    if result.stderr:
-        print(escape(result.stderr), end="")
+    try:
+        result = subprocess.run(split_cmd, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        raise RuntimeError(f"❌ Timed out after {timeout}s running: {cmd}") from None
     if result.returncode != 0:
-        raise subprocess.CalledProcessError(
-            result.returncode, split_cmd, output=result.stdout, stderr=result.stderr
-        )
-    return result.stdout
+        raise subprocess.CalledProcessError(result.returncode, split_cmd)
 
 
 def get_cache():
@@ -401,7 +408,8 @@ def install_tpu_script(name: str, location: str, project: str, config: Config):
     _run(
         f"gcloud compute tpus tpu-vm scp --zone {location}"
         f" --scp-flag=-o --scp-flag=ConnectTimeout=10"
-        f" setup.sh {name}: --project {project}"
+        f" setup.sh {name}: --project {project}",
+        timeout=SCP_TIMEOUT,
     )
     print("🤖 Retrieving IP and updating local ssh settings")
     update_ssh_config(name, location)
@@ -409,7 +417,8 @@ def install_tpu_script(name: str, location: str, project: str, config: Config):
     _run(
         f"gcloud compute tpus tpu-vm ssh --zone {location} {name} --project {project}"
         f" --ssh-flag=-o --ssh-flag=ConnectTimeout=10"
-        f" --command='bash setup.sh'"
+        f" --command='bash setup.sh'",
+        timeout=REMOTE_INSTALL_TIMEOUT,
     )
     print()
     if config.extra_startup_script:
