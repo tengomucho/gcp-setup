@@ -28,6 +28,13 @@ VERBOSE = os.getenv("VERBOSE", "0") == "1"
 SCP_TIMEOUT = 300
 REMOTE_INSTALL_TIMEOUT = 2700
 
+# How long to keep trying when a node stops answering on port 22 while staying
+# READY. Outages observed on 2026-08-04 ran from 17 to ~60 minutes, so this will
+# not ride most of them out — that is deliberate. Five minutes is enough to tell
+# a slow start from a real problem, and failing with the step name beats sitting
+# there for half an hour.
+UNREACHABLE_BUDGET = 300
+
 # Where the detached install writes its output on the TPU, and the markers used
 # to tell that output apart from gcloud's own chatter on the same stream.
 REMOTE_LOG = "tpu-setup.log"
@@ -205,23 +212,35 @@ def get_state(name: str, zone: str):
     return state
 
 
-def wait_for_ssh(name: str, zone: str, timeout: int = 120, interval: int = 5):
+def wait_for_ssh(
+    name: str, zone: str, timeout: int = UNREACHABLE_BUDGET, interval: int = 5
+):
     """Poll the TPU's external IP until port 22 accepts connections.
 
     A TPU node can report ACTIVE/READY before its guest agent has finished
     booting sshd and propagating the pushed SSH key. Hitting scp/ssh in that
     window makes gcloud fall into its internal 10x5s retry loop with no
     connect timeout, which can look like a multi-minute hang.
+
+    A node that has been up for hours can also stop answering here. We wait out
+    the short version and give up on the rest (see _retry_transient).
     """
     ext_ip = get_ext_ip(name, zone)
     print(f"⏳ Waiting for SSH to become reachable on {ext_ip}:22...")
     deadline = time.time() + timeout
+    next_notice = time.time() + 60
     while time.time() < deadline:
         try:
             with socket.create_connection((ext_ip, 22), timeout=5):
                 print("✅ SSH port is open.")
                 return
         except OSError:
+            if time.time() >= next_notice:
+                print(
+                    f"   still no answer on {ext_ip}:22,"
+                    f" {int(deadline - time.time())}s of patience left..."
+                )
+                next_notice = time.time() + 60
             time.sleep(interval)
     raise RuntimeError(
         f"❌ No answer on {ext_ip}:22 after {timeout}s. The node reports ready but is"
@@ -230,27 +249,76 @@ def wait_for_ssh(name: str, zone: str, timeout: int = 120, interval: int = 5):
 
 
 def wait_for_ssh_auth(
-    name: str, zone: str, project: str, attempts: int = 5, interval: int = 10
+    name: str,
+    zone: str,
+    project: str,
+    budget: int = UNREACHABLE_BUDGET,
+    interval: int = 10,
 ):
     """Confirm a real SSH session can be opened, not just that port 22 answers.
 
     sshd can be listening before the guest agent has propagated the pushed key.
     Failing here explicitly beats handing the problem to gcloud, which retries
-    10x5s internally and reports nothing useful.
+    10x5s internally and reports nothing useful. Bounded by the same budget as
+    every other reachability wait, so the whole phase cannot outlive it.
     """
-    for attempt in range(1, attempts + 1):
+    deadline = time.time() + budget
+    attempt = 0
+    while True:
+        attempt += 1
+        remaining = int(deadline - time.time())
         try:
-            _run(_ssh_command(name, zone, project, "true"), timeout=60)
+            _run(
+                _ssh_command(name, zone, project, "true"),
+                timeout=max(1, min(60, remaining)),
+            )
             print("✅ SSH authentication works.")
             return
         except (subprocess.CalledProcessError, RuntimeError):
-            if attempt == attempts:
+            if time.time() + interval >= deadline:
                 raise RuntimeError(
-                    f"❌ Could not open an SSH session to {name} after {attempts}"
-                    f" attempts. The key may not be propagated yet."
+                    f"❌ Gave up on: opening an SSH session to {name}.\n"
+                    f"   Failed {attempt}x over {budget}s. Either the pushed key is"
+                    f" not propagated or the node is not reachable from here."
                 ) from None
-            print(f"⏳ SSH not usable yet (attempt {attempt}/{attempts}), retrying...")
+            print(
+                f"⏳ SSH not usable yet (attempt {attempt}), retrying in {interval}s"
+                f" ({remaining}s left before giving up)..."
+            )
             time.sleep(interval)
+
+
+def _retry_transient(label: str, budget: int, fn):
+    """Retry fn until it succeeds or budget runs out, then fail naming the step.
+
+    A TPU's external IP can stop answering on port 22 while the node stays READY,
+    sshd keeps listening and ICMP keeps working. Brief hiccups are worth retrying;
+    anything still failing after the budget is a real problem, and stopping with
+    the step name is more useful than waiting it out.
+
+    fn is called with the seconds left in the budget and must bound itself by that,
+    so no single attempt can overrun the deadline.
+    """
+    deadline = time.time() + budget
+    attempt = 0
+    while True:
+        attempt += 1
+        remaining = deadline - time.time()
+        try:
+            return fn(max(1, int(remaining)))
+        except (subprocess.CalledProcessError, RuntimeError) as exc:
+            backoff = 10
+            if time.time() + backoff >= deadline:
+                raise RuntimeError(
+                    f"❌ Gave up on: {label}.\n"
+                    f"   Failed {attempt}x over {budget}s, so this is not a slow"
+                    f" start. Last error: {exc}"
+                ) from None
+            print(
+                f"⚠️  {label} failed (attempt {attempt}), retrying in {backoff}s"
+                f" ({int(deadline - time.time())}s left before giving up)..."
+            )
+            time.sleep(backoff)
 
 
 def _ssh_command(name: str, zone: str, project: str, remote_cmd: str) -> str:
@@ -299,7 +367,11 @@ def remote_run_logged(
         f" </dev/null >/dev/null 2>&1 & fi"
     )
     print(f"🏃 Running {script} on the TPU (detached, log: ~/{log})")
-    _run(_ssh_command(name, zone, project, launch), timeout=SCP_TIMEOUT)
+    _retry_transient(
+        f"launching {script} on {name}",
+        UNREACHABLE_BUDGET,
+        lambda left: _run(_ssh_command(name, zone, project, launch), timeout=left),
+    )
 
     # Log lines are tagged remotely so gcloud's own chatter on stderr cannot be
     # mistaken for install output and throw off the resume offset.
@@ -601,11 +673,15 @@ def install_tpu_script(name: str, location: str, project: str, config: Config):
     with tempfile.TemporaryDirectory() as tmpdir:
         tar_path = build_payload(tmpdir, config)
         print("🧾 Copying the install payload")
-        _run(
-            f"gcloud compute tpus tpu-vm scp --zone {location}"
-            f" --scp-flag=-o --scp-flag=ConnectTimeout=10"
-            f" {tar_path} {name}:{PAYLOAD_TAR} --project {project}",
-            timeout=SCP_TIMEOUT,
+        _retry_transient(
+            f"copying the install payload to {name}",
+            UNREACHABLE_BUDGET,
+            lambda left: _run(
+                f"gcloud compute tpus tpu-vm scp --zone {location}"
+                f" --scp-flag=-o --scp-flag=ConnectTimeout=10"
+                f" {tar_path} {name}:{PAYLOAD_TAR} --project {project}",
+                timeout=left,
+            ),
         )
 
     remote_run_logged(
