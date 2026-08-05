@@ -460,6 +460,30 @@ def describe_queued_resource(queued_resource_id: str, zone: str) -> dict:
     return json.loads(out)
 
 
+def queued_resource_state(queued_resource_id: str, zone: str) -> str:
+    """Return the queued resource's state, or GONE if GCP no longer has it.
+
+    GONE and ERROR are deliberately distinct: a cache entry may only be dropped
+    when GCP actually reports the resource missing, never on a transient API
+    failure that would otherwise look identical.
+    """
+    out = subprocess.getoutput(
+        f"gcloud alpha compute tpus queued-resources describe"
+        f" {queued_resource_id} --zone {zone} --format json"
+    )
+    try:
+        info = json.loads(out)
+    except json.JSONDecodeError:
+        lowered = out.lower()
+        if "not_found" in lowered or "not found" in lowered:
+            return "GONE"
+        return "ERROR"
+    raw_state = info.get("state", {})
+    if isinstance(raw_state, dict):
+        return raw_state.get("state", "UNKNOWN")
+    return str(raw_state)
+
+
 def update_ssh_config(name: str, zone: str):
     print(
         f"TPU [bold blue]{name}[/bold blue] restarted, updating local IP/ssh records."
@@ -1034,6 +1058,60 @@ def flex_status(name: str | None = None):
     if has_suspended:
         print("\nSuspended queued resources detected, running cleanup...")
         flex_cleanup()
+
+
+@app.command()
+def flex_cancel(name: str | None = None):
+    """Cancel a pending flex-start request. If no name, cancels all cached ones.
+
+    There is no cancel verb for queued resources: deleting the request is how you
+    withdraw it while it is still WAITING_FOR_RESOURCES, and it also tears down
+    the node once one has been handed out. Reconciling the cache afterwards is
+    flex-cleanup's job.
+    """
+    cache = get_cache()
+    flex_entries = {k: v for k, v in cache.items() if v.get("kind") == "flex-start"}
+
+    if not flex_entries:
+        print("No flex-start entries found in cache.")
+        return
+
+    if name is not None:
+        if name not in flex_entries:
+            print(
+                f"❌ [bold blue]{name}[/bold blue] not found in cache or is not a"
+                f" flex-start entry."
+            )
+            return
+        flex_entries = {name: flex_entries[name]}
+
+    for instance in flex_entries.values():
+        zone = instance["zone"]
+        qr_id = instance["queued_resource_id"]
+        state = queued_resource_state(qr_id, zone)
+
+        if state == "GONE":
+            print(
+                f"[bold blue]{qr_id}[/bold blue] is already gone from GCP,"
+                f" nothing to cancel."
+            )
+            continue
+
+        print(
+            f"Cancelling [bold blue]{qr_id}[/bold blue] in [bold]{zone}[/bold]"
+            f" (state: [cyan]{state}[/cyan])..."
+        )
+        try:
+            _run(
+                f"gcloud alpha compute tpus queued-resources delete"
+                f" {qr_id} --zone {zone} --force --quiet"
+            )
+        except subprocess.CalledProcessError:
+            print(f"❌ Could not cancel [bold blue]{qr_id}[/bold blue].")
+            continue
+        print(f"✅ Cancelled [bold blue]{qr_id}[/bold blue]")
+
+    print("\nRun [bold]flex-cleanup[/bold] to drop cancelled entries from the cache.")
 
 
 @app.command()
