@@ -23,8 +23,5 @@ fi
 
 git config --global credential.helper store
 
-cd ~
-rm -rf ~/Dev/venv/hf
-
 # Add user to docker group
 sudo usermod -aG docker "$USER"
