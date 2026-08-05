@@ -1066,8 +1066,9 @@ def flex_cancel(name: str | None = None):
 
     There is no cancel verb for queued resources: deleting the request is how you
     withdraw it while it is still WAITING_FOR_RESOURCES, and it also tears down
-    the node once one has been handed out. Reconciling the cache afterwards is
-    flex-cleanup's job.
+    the node once one has been handed out. flex-cleanup runs afterwards to drop
+    the cancelled entries from the cache, since a cancel that left them behind
+    would keep the name blocked for the next flex-start.
     """
     cache = get_cache()
     flex_entries = {k: v for k, v in cache.items() if v.get("kind") == "flex-start"}
@@ -1111,12 +1112,20 @@ def flex_cancel(name: str | None = None):
             continue
         print(f"✅ Cancelled [bold blue]{qr_id}[/bold blue]")
 
-    print("\nRun [bold]flex-cleanup[/bold] to drop cancelled entries from the cache.")
+    print("\nReconciling the cache...")
+    flex_cleanup()
 
 
 @app.command()
 def flex_cleanup():
-    """Delete suspended queued resources from GCP and remove them from cache."""
+    """Reconcile the cache with GCP, dropping suspended and vanished entries.
+
+    Two cases need clearing and only one used to be handled. A SUSPENDED request
+    still exists on GCP and has to be deleted there first. A cancelled or expired
+    one is already gone, leaving just the cache entry — that fell through the old
+    `state != "SUSPENDED": continue`, so flex-status kept reporting resources that
+    no longer existed and the name stayed blocked for the next flex-start.
+    """
     cache = get_cache()
     flex_entries = {k: v for k, v in cache.items() if v.get("kind") == "flex-start"}
 
@@ -1128,44 +1137,44 @@ def flex_cleanup():
     for node_id, instance in flex_entries.items():
         zone = instance["zone"]
         qr_id = instance["queued_resource_id"]
-        try:
-            info = describe_queued_resource(qr_id, zone)
-            raw_state = info.get("state", {})
-            state = (
-                raw_state.get("state", "UNKNOWN")
-                if isinstance(raw_state, dict)
-                else str(raw_state)
-            )
-        except Exception:
-            state = "ERROR"
+        state = queued_resource_state(qr_id, zone)
 
-        if state != "SUSPENDED":
+        if state == "ERROR":
+            # Could be a transient API failure, so keep the entry rather than
+            # lose track of a resource that may well still be running.
+            print(
+                f"⚠️  Could not read the state of [bold blue]{qr_id}[/bold blue],"
+                f" leaving it in the cache."
+            )
             continue
 
-        try:
-            _run(
-                f"gcloud alpha compute tpus queued-resources delete"
-                f" {qr_id} --zone {zone} --quiet"
-            )
-        except subprocess.CalledProcessError:
-            print(
-                f"❌ Could not delete queued resource"
-                f" [bold blue]{qr_id}[/bold blue]."
-            )
+        if state == "SUSPENDED":
+            try:
+                _run(
+                    f"gcloud alpha compute tpus queued-resources delete"
+                    f" {qr_id} --zone {zone} --quiet"
+                )
+            except subprocess.CalledProcessError:
+                print(
+                    f"❌ Could not delete queued resource"
+                    f" [bold blue]{qr_id}[/bold blue]."
+                )
+                continue
+        elif state != "GONE":
             continue
 
         del cache[node_id]
         removed.append(node_id)
         print(
             f"✅ Removed [bold blue]{node_id}[/bold blue]"
-            f" (queued resource: {qr_id})"
+            f" ({state.lower()}, queued resource: {qr_id})"
         )
 
     if removed:
         with open(CACHE_FILE, "w") as f:
             json.dump(cache, f, indent=2)
     else:
-        print("No suspended queued resources to clean up.")
+        print("Nothing to clean up.")
 
 
 @app.command()
