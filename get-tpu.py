@@ -848,15 +848,15 @@ def restart(name: str | None = None):
     else:
         print(f"{len(cache)} elements in cache, trying to resume one of them...")
 
-    for name in cache:
-        instance = cache[name]
+    for tpu_name in cache:
+        instance = cache[tpu_name]
         zone = instance["zone"]
-        print(f"\nChecking [bold blue]{name}[/bold blue] in [bold]{zone}[/bold]...")
+        print(f"\nChecking [bold blue]{tpu_name}[/bold blue] in [bold]{zone}[/bold]...")
         try:
-            restart_tpu(name, zone)
+            restart_tpu(tpu_name, zone)
             return
         except subprocess.CalledProcessError:
-            print(f"❌ TPU [bold blue]{name}[/bold blue] is not available")
+            print(f"❌ TPU [bold blue]{tpu_name}[/bold blue] is not available")
             continue
 
 
@@ -875,21 +875,21 @@ def stop(name: str | None = None):
         print(
             f"{len(cache)} elements in cache, trying to stop the first one that appears running."
         )
-    for name in cache:
-        instance = cache[name]
+    for tpu_name in cache:
+        instance = cache[tpu_name]
         zone = instance["zone"]
-        print(f"\nChecking [bold blue]{name}[/bold blue] in [bold]{zone}[/bold]...")
-        state = get_state(name, zone)
+        print(f"\nChecking [bold blue]{tpu_name}[/bold blue] in [bold]{zone}[/bold]...")
+        state = get_state(tpu_name, zone)
         if state == "READY":
             print(
-                f"Stopping TPU [bold blue]{name}[/bold blue] in [bold]{zone}[/bold]..."
+                f"Stopping TPU [bold blue]{tpu_name}[/bold blue] in [bold]{zone}[/bold]..."
             )
-            _run(f"gcloud compute tpus tpu-vm stop {name} --zone {zone}")
-            print(f"🧘 TPU [bold blue]{name}[/bold blue] stopped")
+            _run(f"gcloud compute tpus tpu-vm stop {tpu_name} --zone {zone}")
+            print(f"🧘 TPU [bold blue]{tpu_name}[/bold blue] stopped")
             return
         else:
             print(
-                f"TPU {name} is not running, (state: [cyan]{state}[/cyan]) skipping.."
+                f"TPU {tpu_name} is not running, (state: [cyan]{state}[/cyan]) skipping.."
             )
 
 
