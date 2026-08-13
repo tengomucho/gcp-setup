@@ -9,7 +9,7 @@ import tempfile
 import time
 from collections import OrderedDict
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import typer
 from rich import print
@@ -1032,7 +1032,11 @@ def flex_start(
                 state = "ERROR"
 
             color = _STATE_COLORS.get(state, "white")
-            print(f"  [{color}]{state}[/{color}] ({datetime.now().isoformat()})")
+            waited = timedelta(seconds=int(time.time() - start_time))
+            print(
+                f"  [{color}]{state}[/{color}] ({datetime.now().isoformat()})"
+                f" - started {waited} ago"
+            )
 
             if state == "ACTIVE":
                 elapsed = time.time() - start_time
