@@ -1035,8 +1035,7 @@ def flex_start(
             color = _STATE_COLORS.get(state, "white")
             waited = timedelta(seconds=int(time.time() - start_time))
             print(
-                f"  [{color}]{state}[/{color}] ({datetime.now().isoformat()})"
-                f" - started {waited} ago"
+                f"  [{color}]{state}[/{color}] ({node_id}) - started {waited} ago"
             )
 
             if state == "ACTIVE":
