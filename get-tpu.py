@@ -1,6 +1,7 @@
 import getpass
 import json
 import os
+import re
 import shlex
 import shutil
 import socket
@@ -1074,18 +1075,29 @@ def flex_status(name: str | None = None):
             return
         flex_entries = {name: flex_entries[name]}
 
-    table = Table("Name", "Zone", "Type", "QR State", "VM State", "Queued Resource ID")
+    table = Table("Name", "Zone", "Type", "QR State", "VM State", "Requested")
     has_suspended = False
     for node_id, instance in flex_entries.items():
         zone = instance["zone"]
         qr_id = instance["queued_resource_id"]
+        create_time = None
         try:
             info = describe_queued_resource(qr_id, zone)
             raw_state = info.get("state", {})
             state = raw_state.get("state", "UNKNOWN") if isinstance(raw_state, dict) else str(raw_state)
+            create_time = info.get("createTime")
         except Exception:
             state = "ERROR"
         qr_color = _STATE_COLORS.get(state, "white")
+
+        if create_time:
+            # GCP returns nanosecond precision, which fromisoformat rejects.
+            ts = re.sub(r"(\.\d{6})\d+", r"\1", create_time.replace("Z", "+00:00"))
+            created = datetime.fromisoformat(ts)
+            age = timedelta(seconds=int(time.time() - created.timestamp()))
+            requested_cell = f"{created.astimezone().strftime('%Y-%m-%d %H:%M:%S')} ({age} ago)"
+        else:
+            requested_cell = "-"
 
         if state == "SUSPENDED":
             has_suspended = True
@@ -1104,7 +1116,7 @@ def flex_status(name: str | None = None):
             node_id, zone, instance["type"],
             f"[{qr_color}]{state}[/{qr_color}]",
             vm_cell,
-            qr_id,
+            requested_cell,
         )
 
     Console().print(table)
