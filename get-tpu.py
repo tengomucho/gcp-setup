@@ -83,6 +83,7 @@ LOCATIONS = [
 ]
 
 app = typer.Typer()
+_gcloud_auth_checked = False
 
 
 @dataclass
@@ -90,6 +91,46 @@ class Config:
     tpu_name_prefix: str = "tpu-vm-"
     extra_startup_script: str | None = None
     ssh_identity_file: str | None = None
+
+
+class GcloudAuthError(Exception):
+    """gcloud is missing or has no active account.
+
+    Kept distinct from RuntimeError so the retry loops (_retry_transient,
+    wait_for_ssh_auth) don't catch it: a missing login never fixes itself,
+    so retrying it for the whole budget just delays the clear error.
+    """
+
+
+def ensure_gcloud_authenticated():
+    """Raise a clear error unless gcloud has an active account configured."""
+    global _gcloud_auth_checked
+    if _gcloud_auth_checked:
+        return
+
+    try:
+        result = subprocess.run(
+            [
+                "gcloud",
+                "auth",
+                "list",
+                "--filter=status:ACTIVE",
+                "--format=value(account)",
+            ],
+            text=True,
+            capture_output=True,
+        )
+    except FileNotFoundError:
+        raise GcloudAuthError("❌ gcloud is not installed or is not on PATH.") from None
+
+    if result.returncode != 0 or not result.stdout.strip():
+        detail = result.stderr.strip()
+        message = "❌ No active gcloud account. Run `gcloud auth login` and try again."
+        if detail:
+            message = f"{message}\n   gcloud reported: {detail}"
+        raise GcloudAuthError(message)
+
+    _gcloud_auth_checked = True
 
 
 def _run(cmd: str, timeout: int | None = None):
@@ -102,12 +143,21 @@ def _run(cmd: str, timeout: int | None = None):
     if VERBOSE:
         print(f"[bold blue]Running command:[/bold blue] {cmd}")
     split_cmd = shlex.split(cmd)
+    if split_cmd and split_cmd[0] == "gcloud":
+        ensure_gcloud_authenticated()
     try:
         result = subprocess.run(split_cmd, text=True, timeout=timeout)
     except subprocess.TimeoutExpired:
         raise RuntimeError(f"❌ Timed out after {timeout}s running: {cmd}") from None
     if result.returncode != 0:
         raise subprocess.CalledProcessError(result.returncode, split_cmd)
+
+
+def _gcloud_output(cmd: str) -> str:
+    """Run a gcloud command whose output needs to be parsed."""
+    ensure_gcloud_authenticated()
+    result = subprocess.run(shlex.split(cmd), text=True, capture_output=True)
+    return result.stdout + result.stderr
 
 
 def get_cache():
@@ -181,13 +231,12 @@ def get_config():
 
 
 def get_project():
-    value = subprocess.getoutput("gcloud config get-value project --format=json")
-    value = value.replace('"', "")
-    return value
+    value = _gcloud_output("gcloud config get-value project --format=json")
+    return value.replace('"', "").strip()
 
 
 def list_tpus(zone: str):
-    desc = subprocess.getoutput(
+    desc = _gcloud_output(
         f"gcloud compute tpus tpu-vm list --zone {zone} --format json"
     )
     # convert to json
@@ -401,6 +450,7 @@ def remote_run_logged(
             f" [ -f {rc_file} ] && printf '{RC_TAG}%s\\n' \"$(cat {rc_file})\"; true"
         )
         cmd = _ssh_command(name, zone, project, follow)
+        ensure_gcloud_authenticated()
         if VERBOSE:
             print(f"[bold blue]Running command:[/bold blue] {cmd}")
         proc = subprocess.Popen(
@@ -453,7 +503,7 @@ def remote_run_logged(
 
 
 def describe_queued_resource(queued_resource_id: str, zone: str) -> dict:
-    out = subprocess.getoutput(
+    out = _gcloud_output(
         f"gcloud alpha compute tpus queued-resources describe"
         f" {queued_resource_id} --zone {zone} --format json"
     )
@@ -467,7 +517,7 @@ def queued_resource_state(queued_resource_id: str, zone: str) -> str:
     when GCP actually reports the resource missing, never on a transient API
     failure that would otherwise look identical.
     """
-    out = subprocess.getoutput(
+    out = _gcloud_output(
         f"gcloud alpha compute tpus queued-resources describe"
         f" {queued_resource_id} --zone {zone} --format json"
     )
