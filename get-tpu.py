@@ -168,7 +168,11 @@ def _gcloud_output(cmd: str) -> str:
     if result.returncode != 0:
         if VERBOSE:
             print(f"[bold red]gcloud stderr:[/bold red] {result.stderr.strip()}")
-        raise subprocess.CalledProcessError(result.returncode, cmd)
+        # Attach stderr so callers can tell a resource-not-found from a
+        # transient API failure rather than re-running gcloud to find out.
+        raise subprocess.CalledProcessError(
+            result.returncode, cmd, output=result.stdout, stderr=result.stderr
+        )
     return result.stdout
 
 
@@ -537,15 +541,18 @@ def queued_resource_state(queued_resource_id: str, zone: str) -> str:
     when GCP actually reports the resource missing, never on a transient API
     failure that would otherwise look identical.
     """
-    out = _gcloud_output(
-        f"gcloud alpha compute tpus queued-resources describe"
-        f" {queued_resource_id} --zone {zone} --format json"
-    )
     try:
+        out = _gcloud_output(
+            f"gcloud alpha compute tpus queued-resources describe"
+            f" {queued_resource_id} --zone {zone} --format json"
+        )
         info = json.loads(out)
-    except json.JSONDecodeError:
-        lowered = out.lower()
-        if "not_found" in lowered or "not found" in lowered:
+    except subprocess.CalledProcessError as exc:
+        # A describe of a deleted resource exits non-zero with NOT_FOUND on
+        # stderr. That is how a cancelled/expired request reaches the caller;
+        # a genuine API failure must stay distinct from "gone".
+        stderr = (exc.stderr or "").lower()
+        if "not_found" in stderr or "not found" in stderr:
             return "GONE"
         return "ERROR"
     raw_state = info.get("state", {})
