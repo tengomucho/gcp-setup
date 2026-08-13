@@ -1150,7 +1150,9 @@ def flex_status(name: str | None = None):
 
 
 @app.command()
-def flex_cancel(name: str | None = None):
+def flex_cancel(
+    name: str | None = typer.Argument(None, help="TPU name to cancel; defaults to all cached ones"),
+):
     """Cancel a pending flex-start request. If no name, cancels all cached ones.
 
     There is no cancel verb for queued resources: deleting the request is how you
