@@ -155,10 +155,21 @@ def _run(cmd: str, timeout: int | None = None):
 
 
 def _gcloud_output(cmd: str) -> str:
-    """Run a gcloud command whose output needs to be parsed."""
+    """Run a gcloud command whose parsed output we consume, returning only stdout.
+
+    std/stderr are kept separate because every caller feeds the result to
+    json.loads or strips quotes from it; a gcloud warning on stderr used to get
+    concatenated in and silently break that parse. The nonzero status still
+    surfaces through CalledProcessError, and stderr is echoed for the VERBOSE
+    case so a failure is still diagnosable.
+    """
     ensure_gcloud_authenticated()
     result = subprocess.run(shlex.split(cmd), text=True, capture_output=True)
-    return result.stdout + result.stderr
+    if result.returncode != 0:
+        if VERBOSE:
+            print(f"[bold red]gcloud stderr:[/bold red] {result.stderr.strip()}")
+        raise subprocess.CalledProcessError(result.returncode, cmd)
+    return result.stdout
 
 
 def get_cache():
@@ -167,6 +178,14 @@ def get_cache():
         return {}
     with open(cache_path, "r") as f:
         return json.load(f, object_pairs_hook=OrderedDict)
+
+
+def save_cache(cache: dict):
+    """Persist the cache, creating ~/.get-tpu if it does not exist."""
+    if not os.access(CONFIG_DIR, os.F_OK):
+        os.makedirs(CONFIG_DIR)
+    with open(CACHE_FILE, "w") as f:
+        json.dump(cache, f, indent=2)
 
 
 def _create_config_interactively() -> Config:
@@ -535,6 +554,18 @@ def queued_resource_state(queued_resource_id: str, zone: str) -> str:
     return str(raw_state)
 
 
+def qr_state(info: dict) -> str:
+    """Pull the queued resource state string out of a `describe` result.
+
+    GCP returns `state` as either a dict with a `state` key (annotated form)
+    or a bare string, depending on which endpoint/format produced it.
+    """
+    raw_state = info.get("state", {})
+    if isinstance(raw_state, dict):
+        return raw_state.get("state", "UNKNOWN")
+    return str(raw_state)
+
+
 def update_ssh_config(name: str, zone: str):
     print(
         f"TPU [bold blue]{name}[/bold blue] restarted, updating local IP/ssh records."
@@ -824,10 +855,7 @@ def create(
                 f"Updating cache with [bold blue]{name}[/bold blue] in [bold]{location}[/bold]..."
             )
             cache[name] = {"type": accelerator_type, "zone": location}
-            if not os.access(CONFIG_DIR, os.F_OK):
-                os.makedirs(CONFIG_DIR)
-            with open(CACHE_FILE, "w") as f:
-                json.dump(cache, f, indent=2)
+            save_cache(cache)
             install_tpu_script(name, location, project, config)
             return
         except subprocess.CalledProcessError:
@@ -938,10 +966,7 @@ def rm(name: str):
         print(f"❌ TPU {name} could not be deleted.")
         return
     del cache[name]
-    if not os.access(CONFIG_DIR, os.F_OK):
-        os.makedirs(CONFIG_DIR)
-    with open(CACHE_FILE, "w") as f:
-        json.dump(cache, f, indent=2)
+    save_cache(cache)
     print(f"✅ TPU [bold blue]{name}[/bold blue] deleted")
     print("[bold orange]Note:[/bold orange] check if disks need to be deleted too.")
 
@@ -996,10 +1021,7 @@ def flex_start(
                 "queued_resource_id": queued_resource_id,
                 "kind": "flex-start",
             }
-            if not os.access(CONFIG_DIR, os.F_OK):
-                os.makedirs(CONFIG_DIR)
-            with open(CACHE_FILE, "w") as f:
-                json.dump(cache, f, indent=2)
+            save_cache(cache)
         else:
             print(f"❌ Failed to submit flex-start request for [bold]{zone}[/bold]")
         return
@@ -1010,10 +1032,7 @@ def flex_start(
         "queued_resource_id": queued_resource_id,
         "kind": "flex-start",
     }
-    if not os.access(CONFIG_DIR, os.F_OK):
-        os.makedirs(CONFIG_DIR)
-    with open(CACHE_FILE, "w") as f:
-        json.dump(cache, f, indent=2)
+    save_cache(cache)
 
     print(
         f"\n✅ Queued resource [bold blue]{queued_resource_id}[/bold blue] submitted."
@@ -1027,8 +1046,7 @@ def flex_start(
             time.sleep(5)
             try:
                 info = describe_queued_resource(queued_resource_id, zone)
-                raw_state = info.get("state", {})
-                state = raw_state.get("state", "UNKNOWN") if isinstance(raw_state, dict) else str(raw_state)
+                state = qr_state(info)
             except Exception:
                 state = "ERROR"
 
@@ -1082,8 +1100,7 @@ def flex_status(name: str | None = None):
         create_time = None
         try:
             info = describe_queued_resource(qr_id, zone)
-            raw_state = info.get("state", {})
-            state = raw_state.get("state", "UNKNOWN") if isinstance(raw_state, dict) else str(raw_state)
+            state = qr_state(info)
             create_time = info.get("createTime")
         except Exception:
             state = "ERROR"
@@ -1236,8 +1253,7 @@ def flex_cleanup():
         )
 
     if removed:
-        with open(CACHE_FILE, "w") as f:
-            json.dump(cache, f, indent=2)
+        save_cache(cache)
     else:
         print("Nothing to clean up.")
 
