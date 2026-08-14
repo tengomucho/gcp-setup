@@ -81,6 +81,7 @@ LOCATIONS = [
     "asia-southeast1-a",
     "asia-southeast1-b",
     "asia-southeast1-c",
+    "southamerica-west1-a",
 ]
 
 app = typer.Typer()
