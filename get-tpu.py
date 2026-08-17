@@ -1521,28 +1521,44 @@ def flex_cancel(
             return
         flex_entries = {name: flex_entries[name]}
 
-    for instance in flex_entries.values():
+    def _cancel_one(instance: dict) -> tuple[str, str, str | None, bool]:
+        """Cancel one flex-start entry. Returns (node_id, zone, error_reason, was_gone)."""
+        node_id = instance["queued_resource_id"]
         zone = instance["zone"]
-        qr_id = instance["queued_resource_id"]
-        state = queued_resource_state(qr_id, zone)
+        state = queued_resource_state(node_id, zone)
 
         if state == "GONE":
-            print(
-                f"[bold blue]{qr_id}[/bold blue] is already gone from GCP,"
-                f" nothing to cancel."
-            )
-            continue
+            return node_id, zone, None, True
 
-        print(
-            f"Cancelling [bold blue]{qr_id}[/bold blue] in [bold]{zone}[/bold]"
-            f" (state: [cyan]{state}[/cyan])..."
-        )
         try:
-            _delete_queued_resource(qr_id, zone, force=True)
-        except subprocess.CalledProcessError:
-            print(f"❌ Could not cancel [bold blue]{qr_id}[/bold blue].")
-            continue
-        print(f"✅ Cancelled [bold blue]{qr_id}[/bold blue]")
+            _delete_queued_resource(node_id, zone, force=True)
+            return node_id, zone, None, False
+        except subprocess.CalledProcessError as exc:
+            stderr = (exc.stderr or "").strip()
+            reason = stderr.splitlines()[-1] if stderr else f"exit code {exc.returncode}"
+            return node_id, zone, reason, False
+
+    entries = list(flex_entries.values())
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        results = list(pool.map(_cancel_one, entries))
+
+    cancelled = []
+    already_gone = []
+    failed = []
+    for node_id, zone, reason, was_gone in results:
+        if reason is not None:
+            failed.append((node_id, zone, reason))
+        elif was_gone:
+            already_gone.append(node_id)
+        else:
+            cancelled.append(node_id)
+
+    for node_id in already_gone:
+        print(f"[bold blue]{node_id}[/bold blue] is already gone from GCP, nothing to cancel.")
+    for node_id in cancelled:
+        print(f"✅ Cancelled [bold blue]{node_id}[/bold blue]")
+    for node_id, zone, reason in failed:
+        print(f"❌ Could not cancel [bold blue]{node_id}[/bold blue] in [bold]{zone}[/bold]: {reason}")
 
     print("\nReconciling the cache...")
     flex_cleanup()
