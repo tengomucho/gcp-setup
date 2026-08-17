@@ -1195,12 +1195,12 @@ RACE_POLL_INTERVAL = 15
 def _race_verdict(states: dict[str, str]) -> tuple[str | None, bool]:
     """Return (winner, all_dead) from a {node_id: state} mapping.
 
-    Winner: the first node in ACTIVE. all_dead: every participant is in a
-    terminal state (FAILED / SUSPENDED / GONE / ERROR).
+    Winner: the first node in PROVISIONING or ACTIVE. all_dead: every
+    participant is in a terminal state (FAILED / SUSPENDED / GONE / ERROR).
     """
     winner = None
     for node_id, state in states.items():
-        if state == "ACTIVE" and winner is None:
+        if state in ("PROVISIONING", "ACTIVE") and winner is None:
             winner = node_id
     all_dead = all(
         s in ("FAILED", "SUSPENDED", "GONE", "ERROR") for s in states.values()
@@ -1269,9 +1269,9 @@ def flex_race(
 ):
     """Fan out flex-start requests to every zone offering the accelerator type.
 
-    The first zone to reach ACTIVE wins; the rest are cancelled and the normal
-    install runs on the winner. Queued requests are not billed while waiting,
-    so fanning out costs nothing but the cancellation bookkeeping.
+    The first zone to reach PROVISIONING wins; the rest are cancelled and the
+    normal install runs on the winner. Queued requests are not billed while
+    waiting, so fanning out costs nothing but the cancellation bookkeeping.
     """
     from rich.live import Live
 
@@ -1373,7 +1373,7 @@ def flex_race(
         return
 
     assert winner is not None  # _race_verdict guarantees this when not all_dead
-    print(f"\n🏆 [bold green]{winner}[/bold green] is ACTIVE! Cancelling the rest...")
+    print(f"\n🏆 [bold green]{winner}[/bold green] is {states[winner]}! Cancelling the rest...")
     losers = [n for n in states if n != winner]
     with ThreadPoolExecutor(max_workers=8) as pool:
         pool.map(lambda n: _delete_queued_resource(n, cache[n]["zone"], force=True), losers)
@@ -1400,8 +1400,12 @@ def _cancel_all(states: dict[str, str], cache: dict):
 def selftest():
     """Self-check for the flex-race verdict logic."""
     # No winner while all waiting
-    w, dead = _race_verdict({"a": "WAITING_FOR_RESOURCES", "b": "PROVISIONING"})
+    w, dead = _race_verdict({"a": "WAITING_FOR_RESOURCES", "b": "WAITING_FOR_RESOURCES"})
     assert w is None and not dead
+
+    # Winner picked on PROVISIONING
+    w, dead = _race_verdict({"a": "WAITING_FOR_RESOURCES", "b": "PROVISIONING"})
+    assert w == "b" and not dead
 
     # Winner picked on ACTIVE
     w, dead = _race_verdict({"a": "WAITING_FOR_RESOURCES", "b": "ACTIVE"})
