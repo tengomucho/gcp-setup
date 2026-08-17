@@ -9,6 +9,7 @@ import subprocess
 import tempfile
 import time
 from collections import OrderedDict
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
@@ -21,7 +22,11 @@ CUR_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_DIR = os.path.expanduser("~/.get-tpu")
 CACHE_FILE = os.path.join(CONFIG_DIR, "cache.json")
 CONFIG_FILE = os.path.join(CONFIG_DIR, "config.json")
+ZONES_CACHE_FILE = os.path.join(CONFIG_DIR, "zones-cache.json")
 VERBOSE = os.getenv("VERBOSE", "0") == "1"
+
+DEFAULT_ACCELERATOR = "v6e-4"
+DEFAULT_SOFTWARE_VERSION = "v2-alpha-tpuv6e"
 
 # Timeouts for the ssh/scp steps of an install. The install script waits up to
 # APT_LOCK_TIMEOUT (see setup.sh) for unattended-upgrades to release the dpkg
@@ -191,6 +196,103 @@ def save_cache(cache: dict):
         os.makedirs(CONFIG_DIR)
     with open(CACHE_FILE, "w") as f:
         json.dump(cache, f, indent=2)
+
+
+def _zone_sort_key(zone: str) -> tuple[int, str]:
+    """Sort europe first, then us, then everything else — the same order LOCATIONS uses."""
+    if zone.startswith("europe-"):
+        return (0, zone)
+    if zone.startswith("us-"):
+        return (1, zone)
+    return (2, zone)
+
+
+def discover_zones(accelerator_type: str) -> list[str]:
+    """Sweep every GCP zone and return the ones that offer accelerator_type.
+
+    Runs `gcloud compute tpus locations list` once, then fans out 16 parallel
+    `accelerator-types list` calls. The result is merged into zones-cache.json
+    under the accelerator-type key so refreshing one type never wipes another.
+    """
+    out = _gcloud_output("gcloud compute tpus locations list --format=json")
+    all_zones = sorted(
+        (loc["locationId"] for loc in json.loads(out)), key=_zone_sort_key
+    )
+
+    def _offers(zone: str) -> str | None:
+        try:
+            out = _gcloud_output(
+                f"gcloud compute tpus accelerator-types list"
+                f" --zone={zone} --format=json"
+            )
+            types = {t["type"] for t in json.loads(out)}
+            return zone if accelerator_type in types else None
+        except Exception:
+            return None
+
+    found = []
+    with ThreadPoolExecutor(max_workers=16) as pool:
+        for result in pool.map(_offers, all_zones):
+            if result is not None:
+                found.append(result)
+
+    zones_cache = {}
+    if os.path.exists(ZONES_CACHE_FILE):
+        with open(ZONES_CACHE_FILE, "r") as f:
+            zones_cache = json.load(f)
+    zones_cache[accelerator_type] = found
+    if not os.access(CONFIG_DIR, os.F_OK):
+        os.makedirs(CONFIG_DIR)
+    with open(ZONES_CACHE_FILE, "w") as f:
+        json.dump(zones_cache, f, indent=2)
+
+    return found
+
+
+def get_zones(accelerator_type: str, rediscover: bool = False) -> list[str]:
+    """Return the cached zone list for accelerator_type, sweeping only when needed.
+
+    A missing entry triggers discovery on its own; the flag is only needed to
+    refresh a type that's already cached.
+    """
+    if os.path.exists(ZONES_CACHE_FILE) and not rediscover:
+        with open(ZONES_CACHE_FILE, "r") as f:
+            zones_cache = json.load(f)
+        if accelerator_type in zones_cache:
+            return zones_cache[accelerator_type]
+    return discover_zones(accelerator_type)
+
+
+@app.command("discover-zones")
+def discover_zones_cmd(
+    accelerator_type: str = DEFAULT_ACCELERATOR,
+    force: bool = False,
+):
+    """Discover which GCP zones offer a given accelerator type, caching the result."""
+    if force:
+        print(f"🔄 Force-refreshing zone cache for [bold]{accelerator_type}[/bold]...")
+        zones = discover_zones(accelerator_type)
+        print(f"✅ Found {len(zones)} zones offering {accelerator_type}:")
+        for z in zones:
+            print(f"  {z}")
+        return
+
+    if os.path.exists(ZONES_CACHE_FILE):
+        with open(ZONES_CACHE_FILE, "r") as f:
+            zones_cache = json.load(f)
+        if accelerator_type in zones_cache:
+            zones = zones_cache[accelerator_type]
+            print(f"📋 {accelerator_type} zones (from cache):")
+            for z in zones:
+                print(f"  {z}")
+            print(f"\nRun with --force to refresh.")
+            return
+
+    print(f"🔍 Discovering zones offering [bold]{accelerator_type}[/bold]...")
+    zones = discover_zones(accelerator_type)
+    print(f"✅ Found {len(zones)} zones offering {accelerator_type}:")
+    for z in zones:
+        print(f"  {z}")
 
 
 def _create_config_interactively() -> Config:
@@ -822,8 +924,8 @@ def reinstall(name: str):
 
 @app.command()
 def create(
-    accelerator_type: str = "v6e-4",
-    software_version: str = "v2-alpha-tpuv6e",
+    accelerator_type: str = DEFAULT_ACCELERATOR,
+    software_version: str = DEFAULT_SOFTWARE_VERSION,
     location: str | None = None,
 ):
     """Create a new TPU VM, trying all zones until one succeeds."""
@@ -982,8 +1084,8 @@ def rm(name: str):
 @app.command()
 def flex_start(
     zone: str,
-    accelerator_type: str = "v6e-4",
-    software_version: str = "v2-alpha-tpuv6e",
+    accelerator_type: str = DEFAULT_ACCELERATOR,
+    software_version: str = DEFAULT_SOFTWARE_VERSION,
     max_run_duration: str = "9h",
     auto_reinstall: bool = typer.Option(False, "--reinstall", "-r", help="Poll every 5 s and run reinstall when ACTIVE"),
 ):
@@ -1083,6 +1185,238 @@ _STATE_COLORS = {
     "SUSPENDED": "red",
 }
 
+# ---------------------------------------------------------------------------
+# flex-race
+# ---------------------------------------------------------------------------
+
+RACE_POLL_INTERVAL = 15
+
+
+def _race_verdict(states: dict[str, str]) -> tuple[str | None, bool]:
+    """Return (winner, all_dead) from a {node_id: state} mapping.
+
+    Winner: the first node in ACTIVE. all_dead: every participant is in a
+    terminal state (FAILED / SUSPENDED / GONE / ERROR).
+    """
+    winner = None
+    for node_id, state in states.items():
+        if state == "ACTIVE" and winner is None:
+            winner = node_id
+    all_dead = all(
+        s in ("FAILED", "SUSPENDED", "GONE", "ERROR") for s in states.values()
+    )
+    return winner, all_dead
+
+
+def _submit_flex(
+    node_id: str, zone: str, accel: str, version: str, duration: str
+) -> str | None:
+    """Submit a flex-start request, returning None on success or a short reason."""
+    cmd = (
+        f"gcloud alpha compute tpus queued-resources create {node_id}"
+        f" --zone={zone}"
+        f" --accelerator-type={accel}"
+        f" --runtime-version={version}"
+        f" --node-id={node_id}"
+        f" --provisioning-model=flex-start"
+        f" --max-run-duration={duration}"
+    )
+    try:
+        _gcloud_output(cmd)
+        return None
+    except subprocess.CalledProcessError as exc:
+        stderr = (exc.stderr or "").strip()
+        # Take the last non-empty line as the reason — it's usually the one
+        # that carries the actual error message.
+        for line in reversed(stderr.splitlines()):
+            if line.strip():
+                return line.strip()
+        return f"exit code {exc.returncode}"
+
+
+def _race_table(
+    states: dict[str, str], failures: dict[str, str], started_at: float
+) -> Table:
+    """Build the rich renderable for the live race view."""
+    waiting = sum(
+        1 for s in states.values() if s not in ("FAILED", "SUSPENDED", "GONE", "ERROR")
+    )
+    elapsed = timedelta(seconds=int(time.time() - started_at))
+    table = Table(
+        title=f"flex-race | requested {len(states)} | waiting {waiting} | elapsed {elapsed}",
+        title_justify="left",
+    )
+    table.add_column("Zone")
+    table.add_column("State")
+    for node_id, state in states.items():
+        zone = node_id.split("flex-")[-1]
+        color = _STATE_COLORS.get(state, "white")
+        table.add_row(zone, f"[{color}]{state}[/{color}]")
+    if failures:
+        table.add_row(
+            f"[dim]+{len(failures)} refused[/dim]",
+            "[dim]see below[/dim]",
+        )
+    return table
+
+
+@app.command("flex-race")
+def flex_race(
+    max_run_duration: str = typer.Argument("8h"),
+    accelerator_type: str = DEFAULT_ACCELERATOR,
+    software_version: str = DEFAULT_SOFTWARE_VERSION,
+    zone_discovery: bool = False,
+):
+    """Fan out flex-start requests to every zone offering the accelerator type.
+
+    The first zone to reach ACTIVE wins; the rest are cancelled and the normal
+    install runs on the winner. Queued requests are not billed while waiting,
+    so fanning out costs nothing but the cancellation bookkeeping.
+    """
+    from rich.live import Live
+
+    ensure_gcloud_authenticated()
+
+    zones = get_zones(accelerator_type, rediscover=zone_discovery)
+    if not zones:
+        print(f"❌ No zones found offering {accelerator_type}.")
+        return
+    if zone_discovery:
+        print(f"🔄 Zone list refreshed: {len(zones)} zones offering {accelerator_type}.")
+    else:
+        print(f"📋 Using cached zone list: {len(zones)} zones offering {accelerator_type}.")
+
+    config = get_config()
+    cache = get_cache()
+    project = get_project()
+
+    # -- submit ---------------------------------------------------------------
+    print(f"\n[bold green]Submitting flex-start requests to {len(zones)} zones...[/bold green]")
+    states: dict[str, str] = {}
+    failures: dict[str, str] = {}
+
+    def _submit_one(zone: str) -> tuple[str, str, str | None]:
+        node_id = f"{config.tpu_name_prefix}flex-{zone}"
+        reason = _submit_flex(
+            node_id, zone, accelerator_type, software_version, max_run_duration
+        )
+        return node_id, zone, reason
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        results = list(pool.map(_submit_one, zones))
+
+    accepted = []
+    for node_id, zone, reason in results:
+        if reason is None:
+            states[node_id] = "SUBMITTED"
+            accepted.append((node_id, zone))
+        else:
+            failures[zone] = reason
+
+    # One cache write for all accepted entries so flex-status / flex-cancel /
+    # flex-cleanup all keep working on them.
+    for node_id, zone in accepted:
+        cache[node_id] = {
+            "type": accelerator_type,
+            "zone": zone,
+            "queued_resource_id": node_id,
+            "kind": "flex-start",
+        }
+    save_cache(cache)
+
+    print(f"✅ Submitted to {len(accepted)} zones; {len(failures)} refused.")
+    if failures:
+        for zone, reason in sorted(failures.items()):
+            print(f"   {zone}: {reason}")
+
+    if not states:
+        print("❌ No zone accepted the request. Nothing to race.")
+        return
+
+    # -- poll loop ------------------------------------------------------------
+    started_at = time.time()
+    winner: str | None = None
+
+    def _poll_all():
+        """Fetch the state of every live participant in parallel."""
+        def _one(node_id: str) -> tuple[str, str]:
+            try:
+                info = describe_queued_resource(node_id, cache[node_id]["zone"])
+                return node_id, qr_state(info)
+            except Exception:
+                return node_id, "ERROR"
+
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            for node_id, state in pool.map(_one, list(states)):
+                states[node_id] = state
+
+    try:
+        with Live(_race_table(states, failures, started_at), refresh_per_second=1) as live:
+            while True:
+                time.sleep(RACE_POLL_INTERVAL)
+                _poll_all()
+                winner, all_dead = _race_verdict(states)
+                live.update(_race_table(states, failures, started_at))
+                if winner or all_dead:
+                    break
+    except KeyboardInterrupt:
+        print("\n⚠️  Interrupted — cancelling all submitted requests...")
+        _cancel_all(states, cache)
+        flex_cleanup()
+        print("Done.")
+        return
+
+    # -- winner or all dead ---------------------------------------------------
+    if all_dead and not winner:
+        print("\n❌ All requests ended in a terminal state. No winner.")
+        flex_cleanup()
+        return
+
+    assert winner is not None  # _race_verdict guarantees this when not all_dead
+    print(f"\n🏆 [bold green]{winner}[/bold green] is ACTIVE! Cancelling the rest...")
+    losers = [n for n in states if n != winner]
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        pool.map(lambda n: _delete_queued_resource(n, cache[n]["zone"], force=True), losers)
+    flex_cleanup()
+
+    # -- install --------------------------------------------------------------
+    print(f"\n🚀 Running install on [bold blue]{winner}[/bold blue]...")
+    reinstall(winner)
+
+
+def _cancel_all(states: dict[str, str], cache: dict):
+    """Cancel every submitted request in parallel (best-effort)."""
+    def _one(node_id: str):
+        try:
+            _delete_queued_resource(node_id, cache[node_id]["zone"], force=True)
+        except Exception:
+            pass
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        pool.map(_one, list(states))
+
+
+@app.command(hidden=True)
+def selftest():
+    """Self-check for the flex-race verdict logic."""
+    # No winner while all waiting
+    w, dead = _race_verdict({"a": "WAITING_FOR_RESOURCES", "b": "PROVISIONING"})
+    assert w is None and not dead
+
+    # Winner picked on ACTIVE
+    w, dead = _race_verdict({"a": "WAITING_FOR_RESOURCES", "b": "ACTIVE"})
+    assert w == "b" and not dead
+
+    # All dead detected
+    w, dead = _race_verdict({"a": "FAILED", "b": "SUSPENDED", "c": "GONE", "d": "ERROR"})
+    assert w is None and dead
+
+    # Mix of dead and waiting is neither
+    w, dead = _race_verdict({"a": "FAILED", "b": "WAITING_FOR_RESOURCES"})
+    assert w is None and not dead
+
+    print("✅ selftest passed")
+
 
 @app.command()
 def flex_status(name: str | None = None):
@@ -1150,6 +1484,15 @@ def flex_status(name: str | None = None):
         flex_cleanup()
 
 
+def _delete_queued_resource(qr_id: str, zone: str, force: bool = False):
+    """Delete a queued resource, optionally with --force."""
+    force_flag = " --force" if force else ""
+    _run(
+        f"gcloud alpha compute tpus queued-resources delete"
+        f" {qr_id} --zone {zone}{force_flag} --quiet"
+    )
+
+
 @app.command()
 def flex_cancel(
     name: str | None = typer.Argument(None, help="TPU name to cancel; defaults to all cached ones"),
@@ -1195,10 +1538,7 @@ def flex_cancel(
             f" (state: [cyan]{state}[/cyan])..."
         )
         try:
-            _run(
-                f"gcloud alpha compute tpus queued-resources delete"
-                f" {qr_id} --zone {zone} --force --quiet"
-            )
+            _delete_queued_resource(qr_id, zone, force=True)
         except subprocess.CalledProcessError:
             print(f"❌ Could not cancel [bold blue]{qr_id}[/bold blue].")
             continue
@@ -1242,10 +1582,7 @@ def flex_cleanup():
 
         if state == "SUSPENDED":
             try:
-                _run(
-                    f"gcloud alpha compute tpus queued-resources delete"
-                    f" {qr_id} --zone {zone} --quiet"
-                )
+                _delete_queued_resource(qr_id, zone)
             except subprocess.CalledProcessError:
                 print(
                     f"❌ Could not delete queued resource"
@@ -1285,7 +1622,10 @@ def print_config():
         print(f"Cache file found at {CACHE_FILE}")
     else:
         print(f"❌ Cache file not found at {CACHE_FILE}")
-        return
+    if os.path.exists(ZONES_CACHE_FILE):
+        print(f"Zones cache file found at {ZONES_CACHE_FILE}")
+    else:
+        print(f"❌ Zones cache file not found at {ZONES_CACHE_FILE}")
 
 
 @app.command()
