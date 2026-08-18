@@ -1464,32 +1464,6 @@ def _cancel_all(states: dict[str, str], cache: dict):
         pool.map(_one, list(states))
 
 
-@app.command(hidden=True)
-def selftest():
-    """Self-check for the flex-race verdict logic."""
-    # No winner while all waiting
-    w, dead = _race_verdict({"a": "WAITING_FOR_RESOURCES", "b": "WAITING_FOR_RESOURCES"})
-    assert w is None and not dead
-
-    # Winner picked on PROVISIONING
-    w, dead = _race_verdict({"a": "WAITING_FOR_RESOURCES", "b": "PROVISIONING"})
-    assert w == "b" and not dead
-
-    # Winner picked on ACTIVE
-    w, dead = _race_verdict({"a": "WAITING_FOR_RESOURCES", "b": "ACTIVE"})
-    assert w == "b" and not dead
-
-    # All dead detected
-    w, dead = _race_verdict({"a": "FAILED", "b": "SUSPENDED", "c": "GONE", "d": "ERROR"})
-    assert w is None and dead
-
-    # Mix of dead and waiting is neither
-    w, dead = _race_verdict({"a": "FAILED", "b": "WAITING_FOR_RESOURCES"})
-    assert w is None and not dead
-
-    print("✅ selftest passed")
-
-
 @app.command()
 def flex_status(name: str | None = None):
     """Show the status of flex-start queued resources. If no name, shows all."""
