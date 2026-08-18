@@ -391,33 +391,50 @@ def get_state(name: str, zone: str):
 def wait_for_ssh(
     name: str, zone: str, timeout: int = UNREACHABLE_BUDGET, interval: int = 5
 ):
-    """Poll the TPU's external IP until port 22 accepts connections.
+    """Poll the TPU until SSH accepts connections on its external IP.
 
-    A TPU node can report ACTIVE/READY before its guest agent has finished
-    booting sshd and propagating the pushed SSH key. Hitting scp/ssh in that
-    window makes gcloud fall into its internal 10x5s retry loop with no
-    connect timeout, which can look like a multi-minute hang.
+    The node may not have an external IP yet (or may not even appear in
+    `tpu-vm list`): a flex-start winner is only materialised once its queued
+    resource turns PROVISIONING, and the guest agent can lag behind ACTIVE.
+    Fetching the IP inside the loop instead of assuming it exists lets this one
+    routine cover both the normal create path and a freshly-won flex race, and
+    sidesteps gcloud's internal 10x5s retry loop with no connect timeout, which
+    otherwise reads as a multi-minute hang.
 
     A node that has been up for hours can also stop answering here. We wait out
     the short version and give up on the rest (see _retry_transient).
     """
-    ext_ip = get_ext_ip(name, zone)
-    print(f"⏳ Waiting for SSH to become reachable on {ext_ip}:22...")
     deadline = time.time() + timeout
     next_notice = time.time() + 60
+    ext_ip = None
     while time.time() < deadline:
-        try:
-            with socket.create_connection((ext_ip, 22), timeout=5):
-                print("✅ SSH port is open.")
-                return
-        except OSError:
-            if time.time() >= next_notice:
-                print(
-                    f"   still no answer on {ext_ip}:22,"
-                    f" {int(deadline - time.time())}s of patience left..."
-                )
-                next_notice = time.time() + 60
-            time.sleep(interval)
+        if ext_ip is None:
+            try:
+                ext_ip = get_ext_ip(name, zone)
+                print(f"⏳ Waiting for SSH to become reachable on {ext_ip}:22...")
+            except Exception:
+                # Not materialised / no external IP assigned yet — keep waiting.
+                ext_ip = None
+        if ext_ip is not None:
+            try:
+                with socket.create_connection((ext_ip, 22), timeout=5):
+                    print("✅ SSH port is open.")
+                    return
+            except OSError:
+                pass
+        if time.time() >= next_notice:
+            target = f"{ext_ip}:22" if ext_ip else f"{name} (no external IP yet)"
+            print(
+                f"   still no answer on {target},"
+                f" {int(deadline - time.time())}s of patience left..."
+            )
+            next_notice = time.time() + 60
+        time.sleep(interval)
+    if ext_ip is None:
+        raise RuntimeError(
+            f"❌ {name} got no external IP within {timeout}s."
+            f" Check the node's state before retrying."
+        )
     raise RuntimeError(
         f"❌ No answer on {ext_ip}:22 after {timeout}s. The node reports ready but is"
         f" not accepting SSH — check its state before retrying."
@@ -1190,6 +1207,11 @@ _STATE_COLORS = {
 # ---------------------------------------------------------------------------
 
 RACE_POLL_INTERVAL = 15
+# After the losers are cancelled the winner still has to spin up: PROVISIONING
+# means flex capacity was found, but the node may not have an external IP (or
+# even appear in `tpu-vm list`) yet. Reinstall wants a real VM, so we keep
+# watching until it turns ACTIVE. This bounds that wait.
+RACE_ACTIVE_WAIT = 900
 
 
 def _race_verdict(states: dict[str, str]) -> tuple[str | None, bool]:
@@ -1206,6 +1228,43 @@ def _race_verdict(states: dict[str, str]) -> tuple[str | None, bool]:
         s in ("FAILED", "SUSPENDED", "GONE", "ERROR") for s in states.values()
     )
     return winner, all_dead
+
+
+def _wait_for_winner_active(
+    winner: str, cache: dict, timeout: int = RACE_ACTIVE_WAIT
+) -> bool:
+    """Block until the winner's node turns ACTIVE; return False on failure.
+
+    Cancelling the losers the moment the winner turns PROVISIONING is what
+    saves the second bill, but PROVISIONING is not 'installable': the node may
+    not have been handed out an external IP yet, and `tpu-vm list` may not even
+    show it. Reinstall wants a real, reachable VM, so after the losers are
+    cancelled we keep polling just the winner until GCP materialises it.
+    FAILED / SUSPENDED / GONE abort early; a transient read ERROR is treated
+    as 'keep waiting' rather than losing track of a live node.
+    """
+    zone = cache[winner]["zone"]
+    started = time.time()
+    print(f"\n⏳ Waiting for [bold blue]{winner}[/bold blue] to become ACTIVE...")
+    while time.time() - started < timeout:
+        time.sleep(RACE_POLL_INTERVAL)
+        state = queued_resource_state(winner, zone)
+        elapsed = int(time.time() - started)
+        if state == "ACTIVE":
+            print(f"✅ [bold green]{winner}[/bold green] is ACTIVE after {elapsed}s.")
+            return True
+        if state in ("FAILED", "SUSPENDED", "GONE"):
+            print(
+                f"❌ [bold red]{winner}[/bold red] entered terminal state"
+                f" [{state}], aborting."
+            )
+            return False
+        print(f"   {winner} is {state}, waiting for ACTIVE ({elapsed}s)...")
+    print(
+        f"❌ [bold red]{winner}[/bold red] did not reach ACTIVE within"
+        f" {timeout}s."
+    )
+    return False
 
 
 def _submit_flex(
@@ -1269,9 +1328,10 @@ def flex_race(
 ):
     """Fan out flex-start requests to every zone offering the accelerator type.
 
-    The first zone to reach PROVISIONING wins; the rest are cancelled and the
-    normal install runs on the winner. Queued requests are not billed while
-    waiting, so fanning out costs nothing but the cancellation bookkeeping.
+    The first zone to reach PROVISIONING wins; the rest are cancelled and, once
+    the winner turns ACTIVE, the normal install runs on it. Queued requests are
+    not billed while waiting, so fanning out costs nothing but the
+    cancellation bookkeeping.
     """
     from rich.live import Live
 
@@ -1378,6 +1438,14 @@ def flex_race(
     with ThreadPoolExecutor(max_workers=8) as pool:
         pool.map(lambda n: _delete_queued_resource(n, cache[n]["zone"], force=True), losers)
     flex_cleanup()
+
+    # -- wait for the winner to be installable --------------------------------
+    # PROVISIONING beats the losers to the cancel, but the node may not be
+    # reachable (or even listed) until it turns ACTIVE. Don't hand a phantom to
+    # the installer.
+    if not _wait_for_winner_active(winner, cache):
+        print("No install to run — leaving the winner node as-is.")
+        return
 
     # -- install --------------------------------------------------------------
     print(f"\n🚀 Running install on [bold blue]{winner}[/bold blue]...")
