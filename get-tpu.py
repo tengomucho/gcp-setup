@@ -719,6 +719,8 @@ def update_ssh_config(name: str, zone: str):
         f.writelines(lines)
     # Finally, cleanup known_hosts.
     cleanup_known_hosts(name)
+    # And point the tpu-hermes profile at the fresh alias, if it's set up.
+    _write_hermes_env(name)
 
 
 def cleanup_known_hosts(ssh_alias: str):
@@ -1694,6 +1696,51 @@ def _hermes_profile_exists() -> bool:
     """True if the tpu-hermes profile directory exists on disk."""
     hermes_home = os.environ.get("HERMES_HOME", os.path.expanduser("~/.hermes"))
     return os.path.isdir(os.path.join(hermes_home, "profiles", HERMES_PROFILE))
+
+
+def _hermes_profile_env_path() -> str:
+    """Absolute path to the tpu-hermes profile's .env file."""
+    hermes_home = os.environ.get("HERMES_HOME", os.path.expanduser("~/.hermes"))
+    return os.path.join(hermes_home, "profiles", HERMES_PROFILE, ".env")
+
+
+def _write_hermes_env(host_alias: str):
+    """Point the tpu-hermes profile at the given TPU, if the profile exists.
+
+    Hermes's SSH backend reads TERMINAL_SSH_HOST/USER from the profile's .env
+    when a session starts, so writing the file here is all a fresh
+    `tpu-hermes` session needs to land on the new VM. We write the SSH *alias*
+    (the Host entry update_ssh_config just refreshed) rather than the raw IP:
+    the alias always resolves to the current address via ~/.ssh/config, so the
+    .env survives the IP churn every stop/start brings. USER is the local
+    account name, matching what update_ssh_config puts in the Host entry.
+
+    A no-op when the profile is absent — hermes-setup is opt-in.
+    """
+    if not _hermes_profile_exists():
+        return
+    env_path = _hermes_profile_env_path()
+    user = getpass.getuser()
+    # Merge, don't clobber: the profile's .env may carry other keys (API
+    # tokens the user added), so rewrite only the two lines we own.
+    managed = {"TERMINAL_SSH_HOST": host_alias, "TERMINAL_SSH_USER": user}
+    lines = []
+    seen = set()
+    if os.path.exists(env_path):
+        with open(env_path, "r") as f:
+            for line in f:
+                key = line.split("=", 1)[0].strip()
+                if key in managed:
+                    lines.append(f"{key}={managed[key]}\n")
+                    seen.add(key)
+                else:
+                    lines.append(line)
+    for key, value in managed.items():
+        if key not in seen:
+            lines.append(f"{key}={value}\n")
+    with open(env_path, "w") as f:
+        f.writelines(lines)
+    print(f"🔀 Pointed Hermes profile [bold blue]{HERMES_PROFILE}[/bold blue] at {host_alias}")
 
 
 @app.command("hermes-setup")
