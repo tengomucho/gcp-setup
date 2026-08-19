@@ -1667,6 +1667,89 @@ def flex_cleanup():
         print("Nothing to clean up.")
 
 
+# ---------------------------------------------------------------------------
+# hermes-setup / hermes-remove
+# ---------------------------------------------------------------------------
+
+# Name of the dedicated Hermes profile used to drive a TPU over SSH. Not
+# "tpu": `hermes profile create` drops a wrapper script in ~/.local/bin named
+# after the profile, and a bare `tpu` command would shadow nothing but read
+# like a TPU manager, which this is not.
+HERMES_PROFILE = "tpu-hermes"
+
+
+def _hermes_profile_env() -> dict:
+    """Return an environment that points `hermes` at the tpu-hermes profile.
+
+    `hermes config set` always writes the *active* profile, so configuring a
+    profile we are not switching to goes through HERMES_PROFILE on a
+    per-invocation basis.
+    """
+    env = os.environ.copy()
+    env["HERMES_PROFILE"] = HERMES_PROFILE
+    return env
+
+
+def _hermes_profile_exists() -> bool:
+    """True if the tpu-hermes profile directory exists on disk."""
+    hermes_home = os.environ.get("HERMES_HOME", os.path.expanduser("~/.hermes"))
+    return os.path.isdir(os.path.join(hermes_home, "profiles", HERMES_PROFILE))
+
+
+@app.command("hermes-setup")
+def hermes_setup():
+    """Create the tpu-hermes Hermes profile (SSH backend, persistent shell).
+
+    The profile makes Hermes run its terminal and file tools on the TPU over
+    SSH while the agent itself stays on this machine. The TPU address is NOT
+    set here — it is written to the profile's .env (TERMINAL_SSH_HOST/USER) by
+    create/restart once a VM exists.
+    """
+    if _hermes_profile_exists():
+        print(f"✅ Hermes profile [bold blue]{HERMES_PROFILE}[/bold blue] already exists, nothing to do.")
+        return
+
+    if shutil.which("hermes") is None:
+        print("❌ hermes is not installed or not on PATH — cannot create the profile.")
+        raise typer.Exit(1)
+
+    print(f"[bold green]Creating Hermes profile {HERMES_PROFILE}[bold green]")
+    # --no-skills: the profile only needs to run commands on the TPU; skipping
+    # the bundled skill set keeps it small and out of `hermes update`'s way.
+    _run(f"hermes profile create {HERMES_PROFILE} --no-skills")
+    env = _hermes_profile_env()
+    for key, value in (
+        ("terminal.backend", "ssh"),
+        ("terminal.persistent_shell", "true"),
+    ):
+        subprocess.run(
+            ["hermes", "config", "set", key, value],
+            env=env,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    print(f"✅ Profile [bold blue]{HERMES_PROFILE}[/bold blue] created (backend: ssh, persistent shell).")
+    print("   Launch it with: tpu-hermes")
+
+
+@app.command("hermes-remove")
+def hermes_remove():
+    """Delete the tpu-hermes Hermes profile and its ~/.local/bin wrapper."""
+    if not _hermes_profile_exists():
+        print(f"❌ Hermes profile [bold blue]{HERMES_PROFILE}[/bold blue] does not exist, nothing to remove.")
+        return
+
+    if shutil.which("hermes") is None:
+        print("❌ hermes is not installed or not on PATH — cannot remove the profile.")
+        raise typer.Exit(1)
+
+    print(f"[bold green]Deleting Hermes profile {HERMES_PROFILE}[bold green]")
+    # `profile delete` also removes the ~/.local/bin/<profile> wrapper script.
+    _run(f"hermes profile delete {HERMES_PROFILE} --yes")
+    print(f"✅ Profile [bold blue]{HERMES_PROFILE}[/bold blue] removed.")
+
+
 @app.command()
 def print_config():
     """Show current config and cache file paths."""
