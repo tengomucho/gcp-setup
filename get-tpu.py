@@ -1680,18 +1680,6 @@ def flex_cleanup():
 HERMES_PROFILE = "tpu-hermes"
 
 
-def _hermes_profile_env() -> dict:
-    """Return an environment that points `hermes` at the tpu-hermes profile.
-
-    `hermes config set` always writes the *active* profile, so configuring a
-    profile we are not switching to goes through HERMES_PROFILE on a
-    per-invocation basis.
-    """
-    env = os.environ.copy()
-    env["HERMES_PROFILE"] = HERMES_PROFILE
-    return env
-
-
 def _hermes_profile_exists() -> bool:
     """True if the tpu-hermes profile directory exists on disk."""
     hermes_home = os.environ.get("HERMES_HOME", os.path.expanduser("~/.hermes"))
@@ -1764,14 +1752,15 @@ def hermes_setup():
     # --no-skills: the profile only needs to run commands on the TPU; skipping
     # the bundled skill set keeps it small and out of `hermes update`'s way.
     _run(f"hermes profile create {HERMES_PROFILE} --no-skills")
-    env = _hermes_profile_env()
+    # `hermes config set` writes the *active* profile, and HERMES_PROFILE is not
+    # honored by it — the global `-p` flag is the only way to target another
+    # profile without switching to it.
     for key, value in (
         ("terminal.backend", "ssh"),
         ("terminal.persistent_shell", "true"),
     ):
         subprocess.run(
-            ["hermes", "config", "set", key, value],
-            env=env,
+            ["hermes", "-p", HERMES_PROFILE, "config", "set", key, value],
             check=True,
             capture_output=True,
             text=True,
