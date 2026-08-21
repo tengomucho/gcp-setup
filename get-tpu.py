@@ -1208,7 +1208,7 @@ _STATE_COLORS = {
 # flex-race
 # ---------------------------------------------------------------------------
 
-RACE_POLL_INTERVAL = 15
+RACE_POLL_INTERVAL = 10
 # After the losers are cancelled the winner still has to spin up: PROVISIONING
 # means flex capacity was found, but the node may not have an external IP (or
 # even appear in `tpu-vm list`) yet. Reinstall wants a real VM, so we keep
@@ -1304,7 +1304,7 @@ def _race_table(
     )
     elapsed = timedelta(seconds=int(time.time() - started_at))
     table = Table(
-        title=f"flex-race | requested {len(states)} | waiting {waiting} | elapsed {elapsed}",
+        title=f"requested {len(states)} | waiting {waiting} | elapsed {elapsed}",
         title_justify="left",
     )
     table.add_column("Zone")
