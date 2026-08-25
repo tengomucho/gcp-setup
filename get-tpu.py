@@ -1100,6 +1100,80 @@ def rm(name: str):
     print("[bold orange]Note:[/bold orange] check if disks need to be deleted too.")
 
 
+@app.command("add-disk")
+def add_disk(
+    name: str,
+    size: str = "500GB",
+    mount_point: str = "/mnt/disks/data",
+    disk_type: str = "pd-balanced",
+    disk_name: str | None = None,
+):
+    """Create a persistent disk, attach it to a running TPU VM and mount it.
+
+    TPU VMs have no boot-disk-size knob, so extra space has to arrive as a
+    separate PD. Re-running this is safe: an existing disk is reused and only
+    formatted if it has no filesystem, so the data survives.
+    """
+    cache = get_cache()
+    if name not in cache:
+        print(f"❌ TPU {name} not found in cache.")
+        raise typer.Exit(1)
+    zone = cache[name]["zone"]
+    project = get_project()
+    disk_name = disk_name or f"{name}-data"
+
+    print(f"[bold green]Adding disk {disk_name} ({size}) to {name}[/bold green]")
+    try:
+        _run(
+            f"gcloud compute disks create {disk_name} --zone {zone}"
+            f" --size {size} --type {disk_type}"
+        )
+    except subprocess.CalledProcessError:
+        print(f"⚠️  Disk [bold blue]{disk_name}[/bold blue] exists already, reusing it.")
+
+    try:
+        _run(
+            f"gcloud alpha compute tpus tpu-vm attach-disk {name} --zone {zone}"
+            f" --disk {disk_name} --mode read-write"
+        )
+    except subprocess.CalledProcessError:
+        print(f"⚠️  Could not attach {disk_name} — it may already be attached.")
+
+    # The guest agent exposes attached PDs as /dev/disk/by-id/google-<name>, but
+    # that symlink is not guaranteed on every TPU image, so fall back to the one
+    # whole disk that has neither a filesystem nor a mountpoint.
+    script = (
+        "set -e; "
+        f"dev=$(readlink -f /dev/disk/by-id/google-{disk_name} 2>/dev/null || true); "
+        "[ -b \"$dev\" ] || dev=$(lsblk -dnp -o NAME,FSTYPE,MOUNTPOINT"
+        " | awk '$2==\"\" && $3==\"\" {print $1; exit}'); "
+        "[ -b \"$dev\" ] || { echo 'no attached disk found'; lsblk; exit 1; }; "
+        "echo \"using $dev\"; "
+        "blkid \"$dev\" >/dev/null 2>&1 || sudo mkfs.ext4 -m 0 -F"
+        " -E lazy_itable_init=0,lazy_journal_init=0,discard \"$dev\"; "
+        f"sudo mkdir -p {mount_point}; "
+        f"mountpoint -q {mount_point} || sudo mount -o discard,defaults \"$dev\" {mount_point}; "
+        f"sudo chown $(id -u):$(id -g) {mount_point}; "
+        f"grep -q ' {mount_point} ' /etc/fstab ||"
+        " echo \"UUID=$(sudo blkid -s UUID -o value \"$dev\")"
+        f" {mount_point} ext4 discard,defaults,nofail 0 2\" | sudo tee -a /etc/fstab; "
+        f"df -h {mount_point}"
+    )
+    _run(_ssh_command(name, zone, project, script), timeout=600)
+
+    # Record the disk on the TPU's cache entry so rm / flex-cleanup can delete
+    # it along with the VM instead of leaving it behind, billing. The cache is
+    # re-read here: the mount above takes minutes, and a concurrent flex-race
+    # may have rewritten the file in the meantime.
+    cache = get_cache()
+    entry = {"name": disk_name, "mount_point": mount_point}
+    kept = [d for d in cache[name].get("disks", []) if d["name"] != disk_name]
+    cache[name]["disks"] = kept + [entry]
+    save_cache(cache)
+
+    print(f"✅ [bold blue]{disk_name}[/bold blue] mounted at [bold]{mount_point}[/bold] on {name}")
+
+
 @app.command()
 def flex_start(
     zone: str,

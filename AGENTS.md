@@ -23,6 +23,7 @@ Set `VERBOSE=1` to see every `gcloud` command before it runs.
 | `stop` | `[NAME]` | Stop a running TPU; if no name, stops the first running one found |
 | `ls` | `[--details]` | List cached TPUs; `--details` fetches live state and IP |
 | `rm` | `NAME` | Delete a TPU VM and remove from cache |
+| `add-disk` | `NAME [--size 500GB] [--mount-point PATH] [--disk-type TYPE] [--disk-name NAME]` | Create a PD, attach it to a running TPU and mount it (safe to re-run) |
 | `reinstall` | `NAME` | Re-run the setup script on an existing TPU |
 | `print_config` | — | Show current config and cache file paths |
 | `cleanup_ssh_hosts` | `[NAME]` | Remove stale known_hosts entries; if no name, cleans all cached |
@@ -33,6 +34,10 @@ Set `VERBOSE=1` to see every `gcloud` command before it runs.
 |------|---------|--------|
 | `~/.get-tpu/cache.json` | Tracks created TPUs | `{"tpu-name": {"type": "v5litepod-8", "zone": "europe-west4-a"}}` |
 | `~/.get-tpu/config.json` | User config (optional) | JSON with fields below |
+
+Disks added with `add-disk` are recorded on the TPU's entry as a `disks`
+list — `{"name": ..., "mount_point": ...}` — and are deleted together with
+the TPU by `rm` and `flex-cleanup`.
 
 ### Config fields (`~/.get-tpu/config.json`)
 
