@@ -1078,6 +1078,26 @@ def ls(details: bool = False):
     Console().print(table)
 
 
+def _delete_entry_disks(instance: dict, zone: str):
+    """Delete the disks recorded on a cache entry, best effort.
+
+    Called once the VM it belonged to is gone, so a failure must not abort the
+    teardown: the entry is on its way out of the cache either way, and losing
+    the name is worse than printing the manual command.
+    """
+    for disk in instance.get("disks", []):
+        disk_name = disk["name"]
+        try:
+            _run(f"gcloud compute disks delete {disk_name} --zone {zone} --quiet")
+            print(f"🗑  Deleted disk [bold blue]{disk_name}[/bold blue]")
+        except subprocess.CalledProcessError:
+            print(
+                f"❌ Could not delete disk [bold blue]{disk_name}[/bold blue]."
+                f" Delete it with:\n"
+                f"   gcloud compute disks delete {disk_name} --zone {zone}"
+            )
+
+
 @app.command()
 def rm(name: str):
     """Delete a TPU VM and remove it from cache."""
@@ -1094,10 +1114,12 @@ def rm(name: str):
     except subprocess.CalledProcessError:
         print(f"❌ TPU {name} could not be deleted.")
         return
+    print(f"✅ TPU [bold blue]{name}[/bold blue] deleted")
+    _delete_entry_disks(instance, zone)
     del cache[name]
     save_cache(cache)
-    print(f"✅ TPU [bold blue]{name}[/bold blue] deleted")
-    print("[bold orange]Note:[/bold orange] check if disks need to be deleted too.")
+    if not instance.get("disks"):
+        print("[bold orange]Note:[/bold orange] check if disks need to be deleted too.")
 
 
 @app.command("add-disk")
@@ -1730,6 +1752,7 @@ def flex_cleanup():
         elif state != "GONE":
             continue
 
+        _delete_entry_disks(instance, zone)
         del cache[node_id]
         removed.append(node_id)
         print(
