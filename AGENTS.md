@@ -23,7 +23,7 @@ Set `VERBOSE=1` to see every `gcloud` command before it runs.
 | `stop` | `[NAME]` | Stop a running TPU; if no name, stops the first running one found |
 | `ls` | `[--details]` | List cached TPUs; `--details` fetches live state and IP |
 | `rm` | `NAME` | Delete a TPU VM and remove from cache |
-| `add-disk` | `NAME [--size 500GB] [--mount-point PATH] [--disk-type TYPE] [--disk-name NAME]` | Create a PD, attach it to a running TPU and mount it (safe to re-run) |
+| `add-disk` | `NAME [--size 500GB] [--mount-point PATH] [--disk-type TYPE] [--disk-name NAME] [--use-for-hf-cache]` | Create a PD, attach it to a running TPU and mount it (safe to re-run); `--use-for-hf-cache` moves `~/.cache/huggingface` onto it |
 | `reinstall` | `NAME` | Re-run the setup script on an existing TPU |
 | `print_config` | — | Show current config and cache file paths |
 | `cleanup_ssh_hosts` | `[NAME]` | Remove stale known_hosts entries; if no name, cleans all cached |

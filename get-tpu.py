@@ -1129,6 +1129,9 @@ def add_disk(
     mount_point: str = "/mnt/disks/data",
     disk_type: str = "pd-balanced",
     disk_name: str | None = None,
+    use_for_hf_cache: bool = typer.Option(
+        False, "--use-for-hf-cache", help="Move ~/.cache/huggingface onto the disk"
+    ),
 ):
     """Create a persistent disk, attach it to a running TPU VM and mount it.
 
@@ -1183,12 +1186,41 @@ def add_disk(
     )
     _run(_ssh_command(name, zone, project, script), timeout=600)
 
+    if use_for_hf_cache:
+        # Run separately from the mount so a failure here still leaves a
+        # working, mounted disk behind. The -L check makes it a no-op on a
+        # re-run, and cp -a keeps the snapshots/ -> blobs/ symlinks the HF
+        # cache is built on.
+        hf_script = (
+            "set -e; "
+            f"mkdir -p {mount_point}/hf_cache; "
+            "if [ -L ~/.cache/huggingface ]; then echo 'already linked'; exit 0; fi; "
+            "if [ -d ~/.cache/huggingface ]; then"
+            f" cp -a ~/.cache/huggingface/. {mount_point}/hf_cache/;"
+            " rm -rf ~/.cache/huggingface.bak;"
+            " mv ~/.cache/huggingface ~/.cache/huggingface.bak; fi; "
+            "mkdir -p ~/.cache; "
+            f"ln -s {mount_point}/hf_cache ~/.cache/huggingface; "
+            f"du -sh {mount_point}/hf_cache"
+        )
+        _run(_ssh_command(name, zone, project, hf_script), timeout=3600)
+        print(
+            f"✅ ~/.cache/huggingface now points at [bold]{mount_point}/hf_cache[/bold]"
+        )
+        print(
+            "[bold orange]Note:[/bold orange] the old cache is still on the boot disk"
+            " at ~/.cache/huggingface.bak — remove it to reclaim the space:\n"
+            f"   ssh {name} 'rm -rf ~/.cache/huggingface.bak'"
+        )
+
     # Record the disk on the TPU's cache entry so rm / flex-cleanup can delete
     # it along with the VM instead of leaving it behind, billing. The cache is
     # re-read here: the mount above takes minutes, and a concurrent flex-race
     # may have rewritten the file in the meantime.
     cache = get_cache()
     entry = {"name": disk_name, "mount_point": mount_point}
+    if use_for_hf_cache:
+        entry["hf_cache"] = True
     kept = [d for d in cache[name].get("disks", []) if d["name"] != disk_name]
     cache[name]["disks"] = kept + [entry]
     save_cache(cache)
