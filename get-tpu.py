@@ -1122,12 +1122,39 @@ def rm(name: str):
         print("[bold orange]Note:[/bold orange] check if disks need to be deleted too.")
 
 
+# v6e only supports Hyperdisk; every older family takes Balanced PD.
+_DISK_TYPE_BY_FAMILY = {"v6e": "hyperdisk-balanced"}
+_DEFAULT_DISK_TYPE = "pd-balanced"
+
+
+def _disk_attached(name: str, zone: str, disk_name: str) -> bool:
+    """True if disk_name already shows up in the TPU VM's dataDisks."""
+    try:
+        info = json.loads(
+            subprocess.run(
+                shlex.split(
+                    f"gcloud alpha compute tpus tpu-vm describe {name}"
+                    f" --zone {zone} --format json"
+                ),
+                capture_output=True,
+                text=True,
+                check=True,
+            ).stdout
+        )
+    except (subprocess.CalledProcessError, json.JSONDecodeError):
+        return False
+    return any(
+        d.get("sourceDisk", "").endswith(f"/{disk_name}")
+        for d in info.get("dataDisks", [])
+    )
+
+
 @app.command("add-disk")
 def add_disk(
     name: str,
     size: str = "500GB",
     mount_point: str = "/mnt/disks/data",
-    disk_type: str = "pd-balanced",
+    disk_type: str | None = None,
     disk_name: str | None = None,
     use_for_hf_cache: bool = typer.Option(
         False, "--use-for-hf-cache", help="Move ~/.cache/huggingface onto the disk"
@@ -1146,14 +1173,19 @@ def add_disk(
     zone = cache[name]["zone"]
     project = get_project()
     disk_name = disk_name or f"{name}-data"
+    family = cache[name].get("type", "").split("-")[0]
+    if disk_type is None:
+        disk_type = _DISK_TYPE_BY_FAMILY.get(family, _DEFAULT_DISK_TYPE)
 
-    print(f"[bold green]Adding disk {disk_name} ({size}) to {name}[/bold green]")
+    print(f"[bold green]Adding disk {disk_name} ({size}, {disk_type}) to {name}[/bold green]")
+    created = True
     try:
         _run(
             f"gcloud compute disks create {disk_name} --zone {zone}"
             f" --size {size} --type {disk_type}"
         )
     except subprocess.CalledProcessError:
+        created = False
         print(f"⚠️  Disk [bold blue]{disk_name}[/bold blue] exists already, reusing it.")
 
     try:
@@ -1162,17 +1194,36 @@ def add_disk(
             f" --disk {disk_name} --mode read-write"
         )
     except subprocess.CalledProcessError:
-        print(f"⚠️  Could not attach {disk_name} — it may already be attached.")
+        # An already-attached disk is the only benign failure; anything else
+        # (e.g. a disk type the TPU family doesn't support — gcloud reports it
+        # as a bare "internal error") must not fall through to the mount step.
+        if _disk_attached(name, zone, disk_name):
+            print(f"⚠️  {disk_name} is already attached, reusing it.")
+        else:
+            if created:
+                print(f"🗑️  Attach failed — deleting the unattached disk {disk_name}.")
+                _run(f"gcloud compute disks delete {disk_name} --zone {zone} --quiet")
+            print(
+                f"❌ Could not attach {disk_name} to {name}. Check that"
+                f" {disk_type} is supported by this TPU family."
+            )
+            raise typer.Exit(1)
 
-    # The guest agent exposes attached PDs as /dev/disk/by-id/google-<name>, but
-    # that symlink is not guaranteed on every TPU image, so fall back to the one
-    # whole disk that has neither a filesystem nor a mountpoint.
+    # lsblk reports bytes; gcloud's GB is really GiB on the guest.
+    size_bytes = int(size.upper().rstrip("GB")) * 2**30
+    # The guest agent exposes attached PDs as /dev/disk/by-id/google-<name>
+    # only on some images; on v6e the data disk shows up as a by-id NVMe link
+    # without the name in it. The safe fallback is the one whole disk whose
+    # SIZE matches the requested disk — never a blind "first unmounted disk",
+    # which can match (and would format!) the boot device.
     script = (
         "set -e; "
         f"dev=$(readlink -f /dev/disk/by-id/google-{disk_name} 2>/dev/null || true); "
-        "[ -b \"$dev\" ] || dev=$(lsblk -dnp -o NAME,FSTYPE,MOUNTPOINT"
-        " | awk '$2==\"\" && $3==\"\" {print $1; exit}'); "
-        "[ -b \"$dev\" ] || { echo 'no attached disk found'; lsblk; exit 1; }; "
+        # On a re-run the disk is already mounted; match it either way.
+        "[ -b \"$dev\" ] ||"
+        f" dev=$(lsblk -dbnp -o NAME,SIZE"
+        f" | awk '$2=={size_bytes} {{print $1; exit}}'); "
+        "[ -b \"$dev\" ] || { echo '❌ disk is not attached to the VM:'; lsblk; exit 1; }; "
         "echo \"using $dev\"; "
         "blkid \"$dev\" >/dev/null 2>&1 || sudo mkfs.ext4 -m 0 -F"
         " -E lazy_itable_init=0,lazy_journal_init=0,discard \"$dev\"; "
