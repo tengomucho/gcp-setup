@@ -1235,6 +1235,9 @@ def flex_start(
     software_version: str = DEFAULT_SOFTWARE_VERSION,
     max_run_duration: str = "9h",
     auto_reinstall: bool = typer.Option(False, "--reinstall", "-r", help="Poll every 5 s and run reinstall when ACTIVE"),
+    no_extra_disk: bool = typer.Option(
+        False, "--no-extra-disk", help="Skip the data disk used for the HF cache"
+    ),
 ):
     """Submit a flex-start (spot-like) queued resource request for a TPU."""
     config = get_config()
@@ -1317,6 +1320,8 @@ def flex_start(
                 elapsed = time.time() - start_time
                 print(f"\n✅ Resource is ACTIVE after {elapsed:.1f} secs. Starting reinstall...")
                 reinstall(node_id)
+                if not no_extra_disk:
+                    add_disk(node_id, use_for_hf_cache=True)
                 break
             elif state in ("SUSPENDED", "FAILED", "ERROR"):
                 print(f"\n❌ Resource entered terminal state [{color}]{state}[/{color}], aborting auto-reinstall.")
@@ -1455,6 +1460,9 @@ def flex_race(
     accelerator_type: str = DEFAULT_ACCELERATOR,
     software_version: str = DEFAULT_SOFTWARE_VERSION,
     zone_discovery: bool = False,
+    no_extra_disk: bool = typer.Option(
+        False, "--no-extra-disk", help="Skip the data disk used for the HF cache"
+    ),
 ):
     """Fan out flex-start requests to every zone offering the accelerator type.
 
@@ -1580,6 +1588,8 @@ def flex_race(
     # -- install --------------------------------------------------------------
     print(f"\n🚀 Running install on [bold blue]{winner}[/bold blue]...")
     reinstall(winner)
+    if not no_extra_disk:
+        add_disk(winner, use_for_hf_cache=True)
 
 
 def _cancel_all(states: dict[str, str], cache: dict):
