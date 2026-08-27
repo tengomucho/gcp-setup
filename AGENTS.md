@@ -2,7 +2,7 @@
 
 ## What this tool does
 
-`get-tpu` manages Google Cloud TPU VM instances: create, start/stop, SSH config, and cleanup. It wraps `gcloud` commands and maintains a local cache of known TPUs.
+`get-tpu` manages Google Cloud TPU VM instances: create, start/stop, SSH config, disks, and cleanup. It wraps `gcloud` commands and maintains a local cache of known TPUs.
 
 ## How to invoke
 
@@ -16,40 +16,19 @@ Set `VERBOSE=1` to see every `gcloud` command before it runs.
 
 ## Commands
 
-| Command | Args | Description |
-|---------|------|-------------|
-| `create` | `[--accelerator-type TYPE] [--software-version VER] [--location ZONE]` | Create a new TPU VM, tries all locations until one succeeds |
-| `restart` | `[NAME]` | Start a stopped TPU and update SSH config; if no name, tries all cached |
-| `stop` | `[NAME]` | Stop a running TPU; if no name, stops the first running one found |
-| `ls` | `[--details]` | List cached TPUs; `--details` fetches live state and IP |
-| `rm` | `NAME` | Delete a TPU VM and remove from cache |
-| `add-disk` | `NAME [--size 500GB] [--mount-point PATH] [--disk-type TYPE] [--disk-name NAME] [--use-for-hf-cache]` | Create a PD, attach it to a running TPU and mount it (safe to re-run); `--use-for-hf-cache` moves `~/.cache/huggingface` onto it |
-| `reinstall` | `NAME` | Re-run the setup script on an existing TPU |
-| `print_config` | — | Show current config and cache file paths |
-| `cleanup_ssh_hosts` | `[NAME]` | Remove stale known_hosts entries; if no name, cleans all cached |
+For the available commands and their options, look at the `@app.command` decorators in `get-tpu.py` (or run `./get-tpu.sh --help`). `get-tpu.py` is the source of truth — this file does not list the commands.
 
 ## State files
 
-| File | Purpose | Format |
-|------|---------|--------|
-| `~/.get-tpu/cache.json` | Tracks created TPUs | `{"tpu-name": {"type": "v5litepod-8", "zone": "europe-west4-a"}}` |
-| `~/.get-tpu/config.json` | User config (optional) | JSON with fields below |
+| File | Purpose |
+|------|---------|
+| `~/.get-tpu/cache.json` | Tracks created TPUs; entries carry `type`, `zone`, and for flex-start also `queued_resource_id` and `kind` |
+| `~/.get-tpu/config.json` | User config (created interactively on first run): `tpu_name_prefix`, `extra_startup_script`, `ssh_identity_file` |
+| `~/.get-tpu/zones-cache.json` | Cached per-accelerator-type zone lists (`discover-zones`) |
 
 Disks added with `add-disk` are recorded on the TPU's entry as a `disks`
 list — `{"name": ..., "mount_point": ...}` — and are deleted together with
 the TPU by `rm` and `flex-cleanup`.
-
-### Config fields (`~/.get-tpu/config.json`)
-
-```json
-{
-  "tpu_name_prefix": "tpu-vm-",
-  "extra_startup_script": "/path/to/script.sh",
-  "ssh_identity_file": "~/.ssh/id_ed25519"
-}
-```
-
-All fields are optional; defaults are used if the file is missing.
 
 `extra_startup_script` is called as `script STAGE_DIR`. It must not talk to the
 TPU itself — it only writes local files into `STAGE_DIR`, which get packed into
@@ -59,7 +38,7 @@ mirrors `$HOME` on the TPU.
 
 ## How an install runs
 
-`create` and `reinstall` both go through `install_tpu_script`, which:
+`create`, `reinstall`, and the flex paths all go through `install_tpu_script`, which:
 
 1. waits for port 22, then for a usable SSH session
 2. builds one payload tarball (`setup.sh`, `run-all.sh`, plus whatever the
@@ -77,39 +56,13 @@ ssh <tpu-name> 'cat ~/tpu-setup.log.rc'    # exit code, once finished
 
 ## TPU name convention
 
-Names are `{tpu_name_prefix}{zone}`, e.g. `tpu-vm-europe-west4-a`.
-
-## Common workflows
-
-**Check what TPUs exist and their status:**
-```bash
-./get-tpu.sh ls --details
-```
-
-**Create a TPU (tries all zones automatically):**
-```bash
-./get-tpu.sh create --accelerator-type v5litepod-8 --software-version v2-alpha-tpuv5-lite
-```
-
-**Restart a stopped TPU (updates SSH config automatically):**
-```bash
-./get-tpu.sh restart tpu-vm-europe-west4-a
-```
-
-**Stop a running TPU to save cost:**
-```bash
-./get-tpu.sh stop tpu-vm-europe-west4-a
-```
-
-**Delete a TPU permanently:**
-```bash
-./get-tpu.sh rm tpu-vm-europe-west4-a
-# Note: check and delete associated disks manually in GCP console
-```
+Names are `{tpu_name_prefix}{zone}` (flex-start appends `flex-` before the zone),
+e.g. `tpu-vm-europe-west4-a`, `tpu-vm-flex-europe-west4-a`.
 
 ## SSH access
 
-After `create` or `restart`, `~/.ssh/config` is updated automatically with the TPU's external IP. Connect directly with:
+After `create`, `restart`, or a flex install, `~/.ssh/config` is updated
+automatically with the TPU's external IP. Connect directly with:
 
 ```bash
 ssh tpu-vm-europe-west4-a
@@ -123,4 +76,5 @@ ssh tpu-vm-europe-west4-a
 
 ## Supported zones
 
-Europe first, then US, then Asia. Full list in `get-tpu.py:LOCATIONS`. To target a specific zone, use `--location europe-west4-a`.
+Europe first, then US, then Asia. Full list in `get-tpu.py:LOCATIONS`. Use
+`discover-zones` to find which zones offer a given accelerator type.
