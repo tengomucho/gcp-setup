@@ -1186,6 +1186,18 @@ def add_disk(
             f" --size {size} --type {disk_type}"
         )
     except subprocess.CalledProcessError:
+        # _run streams stderr, so confirm the disk exists instead of treating
+        # every create failure (quota, permissions, API errors) as a collision.
+        try:
+            _gcloud_output(
+                f"gcloud compute disks describe {disk_name} --zone {zone} --format=json"
+            )
+        except subprocess.CalledProcessError:
+            print(
+                f"❌ Could not create disk {disk_name} or confirm it already exists."
+                " Check the gcloud error above."
+            )
+            raise typer.Exit(1)
         created = False
         print(f"⚠️  Disk [bold blue]{disk_name}[/bold blue] exists already, reusing it.")
 
