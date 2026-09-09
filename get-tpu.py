@@ -373,7 +373,7 @@ def list_tpus(zone: str):
 
 def get_ext_ip(name: str, zone: str):
     desc = list_tpus(zone)
-    filtered_desc = [item for item in desc if item["name"].endswith(name)]
+    filtered_desc = [item for item in desc if item["name"].rsplit("/", 1)[-1] == name]
     cur_tpu = filtered_desc[0]
     external_ip = cur_tpu["networkEndpoints"][0]["accessConfig"]["externalIp"]  # type: ignore
     return external_ip
@@ -381,7 +381,7 @@ def get_ext_ip(name: str, zone: str):
 
 def get_state(name: str, zone: str):
     desc = list_tpus(zone)
-    filtered_desc = [item for item in desc if item["name"].endswith(name)]
+    filtered_desc = [item for item in desc if item["name"].rsplit("/", 1)[-1] == name]
     if not filtered_desc:
         return "NOT FOUND"
     state = filtered_desc[0]["state"]
@@ -966,9 +966,10 @@ def create(
         name = f"{config.tpu_name_prefix}{location}"
         print("First check if the TPU is already created...")
         desc = list_tpus(location)
-        if len(desc) > 0:
+        if any(item["name"].rsplit("/", 1)[-1] == name for item in desc):
             print(
-                f"🚀 TPU already exists in [bold]{location}[/bold], skipping this location."
+                f"🚀 TPU [bold blue]{name}[/bold blue] already exists in"
+                f" [bold]{location}[/bold], skipping this location."
             )
             continue
 
