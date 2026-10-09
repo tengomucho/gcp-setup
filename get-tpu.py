@@ -1238,7 +1238,8 @@ def add_disk(
         f" | awk '$2=={size_bytes} {{print $1; exit}}'); "
         "[ -b \"$dev\" ] || { echo '❌ disk is not attached to the VM:'; lsblk; exit 1; }; "
         "echo \"using $dev\"; "
-        "blkid \"$dev\" >/dev/null 2>&1 || sudo mkfs.ext4 -m 0 -F"
+        # sudo: unprivileged blkid can't read the device and exits 0 anyway.
+        "sudo blkid \"$dev\" >/dev/null 2>&1 || sudo mkfs.ext4 -m 0 -F"
         " -E lazy_itable_init=0,lazy_journal_init=0,discard \"$dev\"; "
         f"sudo mkdir -p {mount_point}; "
         f"mountpoint -q {mount_point} || sudo mount -o discard,defaults \"$dev\" {mount_point}; "
