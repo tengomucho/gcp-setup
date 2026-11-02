@@ -3,3 +3,5 @@ __pycache__
 
 # Local extra-startup hook: holds personal credentials, kept out of the repo
 tpu_extra_startup/
+
+extra/
