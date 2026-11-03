@@ -514,10 +514,22 @@ def _retry_transient(label: str, budget: int, fn):
             time.sleep(backoff)
 
 
+def _mux_flags(kind: str) -> str:
+    """gcloud --ssh-flag/--scp-flag options sharing one TCP connection per TPU.
+
+    The blackouts in UNREACHABLE_BUDGET hit after a burst of new connections to
+    port 22 from the same source. Every ssh/scp to a TPU reuses the first one's
+    connection instead, so a long install opens a single connection, not dozens.
+    """
+    opts = ("ControlMaster=auto", "ControlPath=~/.ssh/get-tpu-%C", "ControlPersist=10m")
+    return "".join(f" --{kind}-flag=-o --{kind}-flag={o}" for o in opts)
+
+
 def _ssh_command(name: str, zone: str, project: str, remote_cmd: str) -> str:
     """Build a gcloud tpu-vm ssh invocation running remote_cmd."""
     return (
         f"gcloud compute tpus tpu-vm ssh --zone {zone} {name} --project {project}"
+        f"{_mux_flags('ssh')}"
         f" --ssh-flag=-o --ssh-flag=ConnectTimeout=10"
         f" --ssh-flag=-o --ssh-flag=ServerAliveInterval=15"
         f" --ssh-flag=-o --ssh-flag=ServerAliveCountMax=4"
@@ -913,6 +925,7 @@ def install_tpu_script(name: str, location: str, project: str, config: Config):
             UNREACHABLE_BUDGET,
             lambda left: _run(
                 f"gcloud compute tpus tpu-vm scp --zone {location}"
+                f"{_mux_flags('scp')}"
                 f" --scp-flag=-o --scp-flag=ConnectTimeout=10"
                 f" {tar_path} {name}:{PAYLOAD_TAR} --project {project}",
                 timeout=left,

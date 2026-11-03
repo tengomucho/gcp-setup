@@ -68,6 +68,10 @@ automatically with the TPU's external IP. Connect directly with:
 ssh tpu-vm-europe-west4-a
 ```
 
+The tool's own ssh/scp calls share one connection per TPU (`ControlMaster`,
+socket at `~/.ssh/get-tpu-*`, kept 10 minutes after last use), so an install
+opens a single connection to port 22.
+
 ## Prerequisites
 
 - `gcloud` CLI authenticated and project set (`gcloud config get-value project`)
