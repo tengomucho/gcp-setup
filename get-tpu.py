@@ -1562,6 +1562,9 @@ def flex_race(
     else:
         print(f"📋 Using cached zone list: {len(zones)} zones offering {accelerator_type}.")
 
+    # Cleanup first
+    flex_cleanup()
+
     config = get_config()
     cache = get_cache()
     project = get_project()
